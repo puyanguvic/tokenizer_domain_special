@@ -1,0 +1,36 @@
+\section{Introduction}
+\label{sec:intro}
+
+Tokenization is the invisible boundary where symbolic reality meets neural abstraction.  
+Before any transformer layer or attention head can operate, raw sequences must be segmented into discrete symbols.  
+This segmentation choice---the tokenizer---defines the statistical units of modeling, the size of the vocabulary, and the mapping back to the original input.  
+Although typically viewed as a fixed preprocessing artifact, tokenization profoundly affects model efficiency, generalization, and interpretability \citep{bostrom2020byte, xue2022byt5, clark2022canine, gao2023representation}.  
+
+\paragraph{Motivation.}
+For natural languages, subword algorithms such as BPE \citep{gage1994bpe}, WordPiece \citep{wu2016google}, and Unigram \citep{kudo2018sentencepiece} strike a pragmatic balance between vocabulary size and coverage.  
+Yet in \emph{structured or semi-formal domains}---for example, source code \citep{feng2020codebert, wang2021codet5}, configuration files, network protocols, or genomic sequences \citep{ji2021dnabert, zhou2023proteinbert}---these heuristics collapse.  
+They fragment domain-specific delimiters, merge semantic tokens incorrectly, and rely on normalization steps that are not invertible.  
+As a result, decoding may yield $\kappa(\tau(x)) \ne x$, breaking semantic fidelity.  
+In safety-critical or data-intensive systems, such inconsistency is not merely cosmetic: it undermines estimator correctness, introduces ambiguity, and compromises auditability.
+
+\paragraph{Our Perspective.}
+We contend that tokenization must be treated as a first-class modeling problem rather than a convenience script.  
+In particular, a tokenizer should satisfy two principles:
+
+1. \textbf{Consistency:} every valid input must be exactly reconstructable ($\kappa\!\circ\!\tau = \mathrm{Id}$).  
+2. \textbf{Finite-State Realizability:} both encoder and decoder must be efficiently implementable as deterministic transducers with bounded variation \citep{mohri1997finite}.  
+
+These principles guarantee that tokenization neither alters the information content of the input nor introduces stochastic ambiguity.  
+However, no existing mainstream tokenizer simultaneously satisfies both.
+
+\paragraph{Contributions.}
+We present \textbf{Domain-Specific Tokenization (DST)}, a framework that bridges theoretical rigor and engineering practicality:
+\begin{itemize}
+    \item \textbf{Formal theory.} We restate tokenization as paired mappings $(\tau,\kappa)$ and prove that estimator consistency in the input domain is equivalent to reversibility (\S\ref{sec:theory}).  
+    \item \textbf{Finite-state construction.} We derive conditions under which such tokenizers can be realized as deterministic finite-state transducers (DFSTs), guaranteeing linear-time behavior.  
+    \item \textbf{Domain-aware vocabulary induction.} DST augments statistical token discovery with explicit grammar priors drawn from structured domains (e.g., regex patterns, delimiters).  
+    \item \textbf{Compatibility and reproducibility.} The entire pipeline exports to the Hugging Face \texttt{tokenizer.json} schema, supporting existing model infrastructures.  
+\end{itemize}
+
+DST generalizes across domains---from programming languages and network traces to biomedical strings---and repositions tokenization as an analyzable, verifiable, and learnable component of language modeling.
+

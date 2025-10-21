@@ -1,0 +1,40 @@
+\section{Background and Related Work}
+\label{sec:related}
+
+\subsection{Subword and Character Tokenization}
+
+Classical subword tokenizers such as BPE \citep{gage1994bpe}, WordPiece \citep{wu2016google}, and Unigram \citep{kudo2018sentencepiece} decompose text by frequency-based merges.  
+Variants like SentencePiece \citep{kudo2018sentencepiece} and Byte-BPE \citep{radford2019gpt2} broaden applicability to multilingual and byte-level text.  
+Recent research explores character-level modeling to bypass tokenization entirely—ByT5 \citep{xue2022byt5}, CANINE \citep{clark2022canine}, and Charformer \citep{tay2022charformer}—but such models suffer from quadratic sequence lengths and reduced semantic compression.  
+None of these methods guarantee reversible encoding.
+
+\subsection{Neural and Adaptive Tokenization}
+
+Learned or “vocabulary-free’’ tokenizers jointly optimize segmentation and model parameters \citep{taylor2021learned, kaufman2023soft}.  
+They enhance adaptability but are often opaque, difficult to verify, and computationally heavy.  
+Hybrid systems introduce differentiable approximations of merge operations \citep{wang2023neural, huang2023adapttok}.  
+DST differs by prioritizing \emph{formal guarantees}—exact invertibility and deterministic complexity—while retaining compatibility with statistical or learned vocabularies.
+
+\subsection{Domain-Specific Representations}
+
+Structured domains exhibit compositional regularities (e.g., delimiters, operators, markup).  
+Tokenizers for programming languages \citep{feng2020codebert, wang2021codet5, ahmad2021unified}, biosequences \citep{ji2021dnabert, zhou2023proteinbert}, and mathematical or logical expressions \citep{han2023mathbert} exploit such syntax to improve modeling efficiency.  
+These systems, however, rely on ad-hoc parsers or handcrafted rules and rarely expose a formal consistency guarantee.  
+DST abstracts this pattern under a single theoretical lens applicable to any structured alphabet.
+
+\subsection{Tokenizer Consistency and Finite-State Theory}
+
+The 2025 study “Tokenizer Consistency’’ \citep{wei2025tokenizer} establishes a statistical criterion linking tokenization reversibility to estimator convergence.  
+Independently, finite-state approaches \citep{mohri1997finite, mohri2004weighted, beesley2003finite} provide efficient realizations for deterministic transformations in morphology and lexicon processing.  
+DST unifies these threads: it enforces consistency in theory and compiles to deterministic finite-state transducers in practice.  
+Under multiplicativity and non-erasing constraints, we prove that $(\tau,\kappa)$ can be implemented as subsequential FSTs \citep{choffrut1979sequential}.  
+
+\subsection{Information Efficiency and Representation Bias}
+
+Information-theoretic studies show that suboptimal segmentation inflates entropy and harms compression \citep{brown1992statistical, shannon1948mathematical}.  
+Recent analyses of tokenization bias \citep{bostrom2020byte, ramesh2021tokenization, liu2024tokeneval} quantify how token choices skew embedding spaces and downstream performance.  
+DST can be viewed as an attempt to achieve \emph{information-consistent representation}: the mapping that minimizes mutual-information distortion between raw input and token sequence while remaining finitely realizable.
+
+\paragraph{Summary.}
+Across literature, tokenization is either heuristic (subword) or opaque (learned).  
+Our work advances a third line: a mathematically grounded, domain-aware, and verifiable framework that scales to structured inputs without sacrificing efficiency.

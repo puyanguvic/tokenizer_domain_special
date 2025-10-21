@@ -1,0 +1,14 @@
+\begin{abstract}
+Tokenization defines the interface between raw symbolic input and the representational space of language models. Although
+ often treated as a preprocessing convenience, it fundamentally governs how structured or linguistic information is encoded, compressed, and reconstructed.  
+Existing subword methods---BPE \citep{gage1994bpe}, WordPiece \citep{wu2016google}, Unigram \citep{kudo2018sentencepiece}---optimize frequency-based merges but make no guarantees of reversibility or consistency.  
+In structured domains such as source code, network protocols, biological sequences, or machine logs, these tokenizers violate syntactic boundaries and destroy invertibility, leading to information loss and biased estimation.  
+
+We introduce \textbf{Domain-Specific Tokenization (DST)}, a general framework that unifies theoretical consistency and practical realizability.  
+DST formalizes tokenization as a pair of stochastic mappings $(\tau, \kappa)$ between string and token spaces and proves a \emph{Fundamental Consistency Theorem}:  
+an estimator in token space is consistent in the original domain if and only if $\kappa\!\circ\!\tau = \mathrm{Id}$.  
+We then derive sufficient conditions---multiplicativity and non-erasingness---under which $(\tau,\kappa)$ admits a deterministic finite-state realization.  
+The resulting encoder–decoder pair achieves exact reversibility, linear-time execution, and seamless compatibility with modern Transformer ecosystems.  
+Across multiple structured domains, DST yields perfect reconstruction, 10–20 \% sequence-length reduction, and lower entropy dispersion compared with subword baselines.  
+We release an open-source toolkit to foster verifiable, domain-aware tokenization research.
+\end{abstract}

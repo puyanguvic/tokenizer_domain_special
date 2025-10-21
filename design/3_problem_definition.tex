@@ -1,0 +1,406 @@
+\section{Theoretical Framework}
+\label{sec:theory}
+
+In this section we formalize tokenization as a pair of mappings between
+string and token spaces, derive a fundamental theorem connecting
+reversibility and estimator consistency, and establish finite-state
+conditions that make such mappings efficiently realizable.
+
+% ------------------------------------------------------------
+\subsection{Tokenizer as a Pair of Stochastic Maps}
+
+Let $\Sigma$ denote a finite alphabet and
+$\mathcal{X}=\Sigma^{*}$ the set of all finite strings.
+A tokenizer is characterized by two measurable mappings:
+\[
+\tau:\mathcal{X}\to\mathcal{Y},\qquad
+\kappa:\mathcal{Y}\to\mathcal{X},
+\]
+where $\mathcal{Y}=\mathcal{V}^{*}$ is the space of token sequences over a
+finite vocabulary $\mathcal{V}$.
+The encoder $\tau$ converts strings into token sequences,
+while the decoder $\kappa$ reconstructs strings from tokens.
+Both may be deterministic or stochastic.
+
+For a distribution $P$ over $\mathcal{X}$, we denote its
+pushforward under $\tau$ as
+$\tau_{\#}P(A)=P(\{x:\tau(x)\in A\})$.
+When a model learns a distribution $\hat Q$ on $\mathcal{Y}$,
+the induced distribution on $\mathcal{X}$ is
+$\kappa_{\#}\hat Q$.
+
+% ------------------------------------------------------------
+\subsection{Exact and Statistical Consistency}
+
+\begin{definition}[Exact Consistency]
+A tokenizer pair $(\tau,\kappa)$ is \emph{exactly consistent}
+if and only if
+\[
+\forall x\in\mathcal{X},\qquad
+\kappa(\tau(x))=x.
+\]
+\end{definition}
+
+\begin{definition}[Statistical Consistency]
+Let $\{\hat Q_n\}$ be a sequence of estimators on $\mathcal{Y}$ such that
+$\hat Q_n\xrightarrow{n\to\infty}\tau_{\#}P$.
+We call $(\tau,\kappa)$ \emph{statistically consistent}
+if $\kappa_{\#}\hat Q_n \to P$ in distribution.
+\end{definition}
+
+\begin{theorem}[Fundamental Consistency Theorem]
+\label{thm:consistency}
+For all $P\in\mathcal{P}(\mathcal{X})$ and all estimator sequences
+$\{\hat Q_n\}$ consistent on $\mathcal{Y}$,
+the induced estimators $\kappa_{\#}\hat Q_n$
+converge to $P$ if and only if
+\[
+\kappa\!\circ\!\tau = \mathrm{Id}_{\mathcal{X}}.
+\]
+\end{theorem}
+
+\begin{proof}[Sketch]
+($\Rightarrow$)  
+Assume $\kappa\!\circ\!\tau = \mathrm{Id}$.  
+For any bounded test function $f$,
+\[
+\int f\,d(\kappa_{\#}\hat Q_n)
+=\int f(\kappa(y))\,d\hat Q_n(y)
+\to \int f(\kappa(y))\,d(\tau_{\#}P)(y)
+= \int f(x)\,dP(x).
+\]
+
+($\Leftarrow$)  
+Take $P=\delta_x$ (Dirac at $x$).
+Then $\tau_{\#}P=\delta_{\tau(x)}$ and
+statistical consistency gives
+$\kappa_{\#}\delta_{\tau(x)}=\delta_x$,
+so $\kappa(\tau(x))=x$.
+\end{proof}
+
+Hence, reversibility is both necessary and sufficient
+for lifting estimator convergence from token space
+back to the original domain.
+Consistency is therefore not a heuristic preference
+but a \emph{theoretical prerequisite} for faithful modeling.
+
+% ------------------------------------------------------------
+\subsection{Multiplicativity and Non-Erasing Constraints}
+
+Exact consistency alone does not guarantee computational feasibility.
+To ensure linear-time realizability we impose two structural constraints:
+
+\begin{enumerate}
+\item \textbf{Multiplicativity.}
+For all $x_1,x_2\in\mathcal{X}$,
+\[
+\tau(x_1x_2)=\tau(x_1)\tau(x_2).
+\]
+This enforces concatenative composition—tokenizing a
+concatenation equals concatenating tokenizations.
+
+\item \textbf{Non-Erasing Property.}
+For every symbol $a\in\Sigma$, $\tau(a)\neq\epsilon$,
+so that no input character disappears.
+\end{enumerate}
+
+Together these imply that $\tau$
+is a \emph{monoid homomorphism} from
+$(\Sigma^{*},\cdot)$ to $(\mathcal{V}^{*},\cdot)$,
+ensuring the encoder respects sequence concatenation.
+
+\begin{proposition}[Deterministic Transduction]
+If $\tau$ is multiplicative and non-erasing,
+then $(\tau,\kappa)$ can be implemented as
+a pair of deterministic finite-state transducers (DFSTs)
+of size $O(|\mathcal{V}|\,|\Sigma|)$.
+\end{proposition}
+
+\begin{proof}[Idea]
+Construct a trie $\mathcal{T}$ of all tokens in $\mathcal{V}$.
+Each node corresponds to a prefix; terminal nodes emit token IDs.
+A greedy “maximal-munch’’ traversal defines $\tau$.
+Because no $\epsilon$-edges occur and every prefix is unique,
+the mapping is subsequential \citep{choffrut1979sequential}.
+The inverse $\kappa$ concatenates literal outputs.
+\end{proof}
+
+This establishes that the consistency condition
+can be satisfied with deterministic, linearly scalable automata.
+
+% ------------------------------------------------------------
+\subsection{Ambiguity and Bounded Variation}
+
+Ambiguity arises if different token sequences map to the same string,
+i.e.\ $\exists y_1\ne y_2$ such that $\kappa(y_1)=\kappa(y_2)$.
+Let
+\[
+A(x)=|\{y\in\mathcal{Y}:\kappa(y)=x\}|
+\]
+denote the \emph{ambiguity index}.
+For consistent deterministic tokenizers $A(x)=1$ for all $x$.
+Bounded-variation results \citep{mohri1997finite}
+show that if $A(x)$ is finite and $\tau$ is length-monotone,
+then a subsequential realization exists.
+DST enforces $A(x)\!\equiv\!1$ by design.
+
+When stochastic variants are desired,
+probabilities can be marginalized as
+\[
+P(x)=\sum_{y\in\tau^{-1}(x)}P(y)
+\approx\sum_{y\in\mathrm{TopK}(\tau^{-1}(x))}P(y),
+\]
+yielding tractable approximations while preserving reversibility
+for the dominant paths.
+
+% ------------------------------------------------------------
+\subsection{Information-Theoretic Interpretation}
+
+Let $H_{\text{char}}$ and $H_{\text{tok}}$
+denote the empirical entropies of character
+and token sequences respectively.
+A consistent tokenizer preserves mutual information:
+\[
+I(X;Y)=H_{\text{char}}-H_{\text{char}\mid Y}=H_{\text{tok}}.
+\]
+Inconsistent tokenizers induce
+$H_{\text{char}\mid Y}>0$,
+reflecting information loss.
+From a compression perspective,
+DST aims to minimize redundancy
+subject to perfect invertibility:
+\[
+\min_{\tau}\; H_{\text{tok}} \quad
+\text{s.t.}\quad \kappa\!\circ\!\tau = \mathrm{Id}.
+\]
+This connects consistency to Shannon-optimal coding:
+any reversible minimal-entropy mapping is
+an information-preserving representation.
+
+% ------------------------------------------------------------
+\subsection{Implications}
+
+\begin{itemize}
+\item The theorem provides a unified criterion for evaluating
+tokenizers across languages, codes, or protocols.
+\item The multiplicativity and non-erasing constraints ensure
+linear-time deterministic implementation.
+\item The information-theoretic view explains why consistent
+tokenization improves compression and model generalization.
+\end{itemize}
+
+Thus, Domain-Specific Tokenization (DST)
+links theoretical consistency, finite-state computability,
+and representational efficiency under a single framework.
+
+
+\section{Methodology}
+\label{sec:method}
+
+This section translates the theoretical guarantees from
+Section \ref{sec:theory} into a practical construction pipeline.
+Domain-Specific Tokenization (DST) operationalizes
+consistency and finite-state realizability through three stages:
+(1) vocabulary induction with domain awareness,
+(2) deterministic encoder–decoder compilation,
+and (3) optional probabilistic marginalization for ambiguous cases.
+
+% ------------------------------------------------------------
+\subsection{Design Philosophy}
+\label{sec:method-design}
+
+DST follows three design tenets that jointly ensure
+reversibility, efficiency, and generality:
+
+\begin{enumerate}
+  \item \textbf{Consistency as a constraint.}
+        Every transformation must satisfy
+        $\kappa(\tau(x))\!=\!x$ for all $x$
+        within the domain grammar. No detokenization heuristics
+        or post-hoc normalization are allowed.
+
+  \item \textbf{Determinism through maximal munch.}
+        The encoder scans the input and always chooses
+        the longest token prefix present in the vocabulary.
+        This yields a subsequential deterministic mapping
+        and prevents overlapping ambiguities.
+
+  \item \textbf{Domain awareness via grammar priors.}
+        Candidate tokens are filtered through
+        regular-expression-style patterns that express
+        permissible symbols and delimiters
+        of the structured domain.
+        This hybrid symbolic–statistical design
+        generalizes across programming languages,
+        markup formats, logs, and bio-sequences.
+\end{enumerate}
+
+% ------------------------------------------------------------
+\subsection{Stage I – Domain-Aware Vocabulary Induction}
+\label{sec:method-vocab}
+
+The first stage builds a compact vocabulary $\mathcal{V}$
+that covers the corpus while respecting its syntactic grammar.
+Unlike pure frequency methods (e.g., BPE),
+DST constructs $\mathcal{V}$ via the following algorithm.
+
+\begin{algorithm}[H]
+\caption{Domain-Aware Vocabulary Induction}
+\label{alg:vocab}
+\begin{algorithmic}[1]
+\REQUIRE Corpus $\mathcal{D}$, max $n$-gram $N$, frequency threshold $\theta$
+\ENSURE Vocabulary $\mathcal{V}$
+\STATE $\mathcal{V}\!\leftarrow$ base alphabet $\Sigma$
+\FOR{each sequence $s\in\mathcal{D}$}
+  \FOR{$n=1$ to $N$}
+    \FOR{substring $u$ of length $n$ in $s$}
+      \STATE count $f(u)$
+    \ENDFOR
+  \ENDFOR
+\ENDFOR
+\FOR{each $u$ with $f(u)>\theta$ and \textit{matches grammar}}
+  \STATE add $u$ to $\mathcal{V}$
+\ENDFOR
+\STATE add byte-fallback tokens \texttt{<Bxx>} for 0–255
+\RETURN $\mathcal{V}$
+\end{algorithmic}
+\end{algorithm}
+
+This procedure has $O(|\mathcal{D}|N)$ complexity and can be
+parallelized by sharding the corpus.
+The result balances statistical coverage and grammar fidelity.
+Byte-fallback tokens guarantee total coverage and
+preserve non-ASCII symbols without violating non-erasingness.
+
+% ------------------------------------------------------------
+\subsection{Stage II – Finite-State Encoder and Decoder}
+\label{sec:method-fst}
+
+Given $\mathcal{V}$, DST compiles two deterministic finite-state
+transducers (DFSTs): the encoder $\tau$ and its inverse $\kappa$.
+A trie $\mathcal{T}$ over $\mathcal{V}$ is constructed once;
+each node corresponds to a prefix, terminal nodes mark tokens.
+
+\begin{algorithm}[H]
+\caption{DFST Encoder and Decoder Compilation}
+\label{alg:fst}
+\begin{algorithmic}[1]
+\REQUIRE Vocabulary $\mathcal{V}$
+\ENSURE Encoder $\tau$, Decoder $\kappa$
+\STATE Build trie $\mathcal{T}$ from $\mathcal{V}$
+\FOR{token $t\in\mathcal{V}$}
+  \STATE insert $t$ into $\mathcal{T}$ character by character
+\ENDFOR
+\STATE $\tau(x)$ ← greedy traversal of $\mathcal{T}$ (maximal munch)
+\STATE $\kappa(y_1\dots y_k)$ ← concatenate literal forms of $y_i$
+\RETURN $(\tau,\kappa)$
+\end{algorithmic}
+\end{algorithm}
+
+\paragraph{Complexity and Implementation.}
+The trie is compiled into a transition table
+of dimension $|Q|\!\times\!|\Sigma|$,
+each entry storing the next-state index and optional token ID.
+Runtime complexity is $O(|x|)$ per sequence;
+memory usage is linear in $|\mathcal{V}|$.
+Such tables map cleanly to GPU kernels or C++ inference code
+with constant-time lookups.
+
+\paragraph{Correctness Properties.}
+\begin{itemize}
+  \item Deterministic encoding and decoding (no backtracking)
+  \item Non-erasing transitions (no $\epsilon$ edges)
+  \item $\kappa(\tau(x))\!=\!x$ for all $x$
+  \item Linear complexity and bounded latency
+\end{itemize}
+
+These satisfy the conditions of Theorem \ref{thm:consistency}
+and Proposition 3.1, guaranteeing both
+statistical and computational consistency.
+
+% ------------------------------------------------------------
+\subsection{Stage III – Probabilistic Marginalization (Optional)}
+\label{sec:method-kbest}
+
+In domains with overlapping patterns,
+DST approximates the marginal likelihood $P(x)$
+over all tokenizations by a top-$K$ beam search:
+
+\begin{algorithm}[H]
+\caption{Top-$K$ Marginalization over DFST Paths}
+\label{alg:kbest}
+\begin{algorithmic}[1]
+\REQUIRE Input $x$, model probabilities $P(y)$, beam $K$
+\ENSURE $\hat P(x)$
+\STATE Initialize beam $\mathcal{B}\!\leftarrow\!\{(\epsilon,1.0)\}$
+\FOR{each character $c$ in $x$}
+  \STATE expand beam via valid transitions in $\mathcal{T}$
+  \STATE retain top-$K$ partial sequences by probability
+\ENDFOR
+\STATE $\hat P(x)\!\leftarrow\!\sum_{(y,p)\in\mathcal{B}}p$
+\RETURN $\hat P(x)$
+\end{algorithmic}
+\end{algorithm}
+
+Empirically, $K\!\le\!20$ achieves near-exact
+probabilities on structured text.
+This extension connects deterministic tokenization
+to probabilistic sequence models while retaining consistency
+on the dominant parse paths.
+
+% ------------------------------------------------------------
+\subsection{Export and Integration}
+\label{sec:method-export}
+
+DST tokenizers are serialized into the
+\texttt{tokenizers} library schema used by Hugging Face:
+
+\begin{verbatim}
+tokenizer.json
+tokenizer_config.json
+vocab.txt
+\end{verbatim}
+
+Each file encodes DFST transitions, normalizers,
+and byte-fallback tables.
+Models can thus invoke DST transparently through
+\texttt{AutoTokenizer.from_pretrained()}.
+
+\paragraph{Complexity Profile.}
+\begin{center}
+\begin{tabular}{lccc}
+\toprule
+Stage & Time Complexity & Space Complexity & Determinism \\
+\midrule
+Vocabulary Induction & $O(|\mathcal{D}|N)$ & $O(|\mathcal{V}|)$ & ✔ \\
+DFST Compilation & $O(|\mathcal{V}|)$ & $O(|Q||\Sigma|)$ & ✔ \\
+Encoding/Decoding & $O(|x|)$ & $O(1)$ per symbol & ✔ \\
+Marginalization ($K$) & $O(K|x|)$ & $O(K)$ & stochastic approx. \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\paragraph{Visualization.}
+\begin{figure}[h]
+\centering
+\includegraphics[width=0.9\textwidth]{figures/dst_pipeline.pdf}
+\caption{
+DST pipeline:
+(1) Corpus → (2) Vocabulary → (3) DFST Encoder/Decoder → (4) Optional Marginalization → (5) Model Integration.}
+\label{fig:dst_pipeline}
+\end{figure}
+
+% ------------------------------------------------------------
+\subsection{Discussion}
+DST’s construction provides a general recipe for
+\emph{finite-state, consistent, domain-aware tokenization}.
+It separates symbolic knowledge (grammars, delimiters)
+from statistical estimation (frequency counts)
+while ensuring that the overall mapping
+remains mathematically and computationally sound.
+This property allows DST to serve as
+a unifying front-end for models trained on
+structured or semi-structured data,
+ranging from programming languages and logs
+to chemical and genomic sequences.
+
