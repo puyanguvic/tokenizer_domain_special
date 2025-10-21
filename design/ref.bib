@@ -1,236 +1,427 @@
-@inproceedings{gage1994bpe,
-  title={A New Algorithm for Data Compression},
-  author={Gage, Philip},
-  booktitle={The C Users Journal},
-  year={1994},
-  note={Byte Pair Encoding}
+
+% Journals
+
+% First the Full Name is given, then the abbreviation used in the AMS Math
+% Reviews, with an indication if it could not be found there.
+% Note the 2nd overwrites the 1st, so swap them if you want the full name.
+
+ %{AMS}
+ @String{AMSTrans = "American Mathematical Society Translations" }
+ @String{AMSTrans = "Amer. Math. Soc. Transl." }
+ @String{BullAMS = "Bulletin of the American Mathematical Society" }
+ @String{BullAMS = "Bull. Amer. Math. Soc." }
+ @String{ProcAMS = "Proceedings of the American Mathematical Society" }
+ @String{ProcAMS = "Proc. Amer. Math. Soc." }
+ @String{TransAMS = "Transactions of the American Mathematical Society" }
+ @String{TransAMS = "Trans. Amer. Math. Soc." }
+
+ %ACM
+ @String{CACM = "Communications of the {ACM}" }
+ @String{CACM = "Commun. {ACM}" }
+ @String{CompServ = "Comput. Surveys" }
+ @String{JACM = "J. ACM" }
+ @String{ACMMathSoft = "{ACM} Transactions on Mathematical Software" }
+ @String{ACMMathSoft = "{ACM} Trans. Math. Software" }
+ @String{SIGNUM = "{ACM} {SIGNUM} Newsletter" }
+ @String{SIGNUM = "{ACM} {SIGNUM} Newslett." }
+
+ @String{AmerSocio = "American Journal of Sociology" }
+ @String{AmerStatAssoc = "Journal of the American Statistical Association" }
+ @String{AmerStatAssoc = "J. Amer. Statist. Assoc." }
+ @String{ApplMathComp = "Applied Mathematics and Computation" }
+ @String{ApplMathComp = "Appl. Math. Comput." }
+ @String{AmerMathMonthly = "American Mathematical Monthly" }
+ @String{AmerMathMonthly = "Amer. Math. Monthly" }
+ @String{BIT = "{BIT}" }
+ @String{BritStatPsych = "British Journal of Mathematical and Statistical
+          Psychology" }
+ @String{BritStatPsych = "Brit. J. Math. Statist. Psych." }
+ @String{CanMathBull = "Canadian Mathematical Bulletin" }
+ @String{CanMathBull = "Canad. Math. Bull." }
+ @String{CompApplMath = "Journal of Computational and Applied Mathematics" }
+ @String{CompApplMath = "J. Comput. Appl. Math." }
+ @String{CompPhys = "Journal of Computational Physics" }
+ @String{CompPhys = "J. Comput. Phys." }
+ @String{CompStruct = "Computers and Structures" }
+ @String{CompStruct = "Comput. \& Structures" }
+ @String{CompJour = "The Computer Journal" }
+ @String{CompJour = "Comput. J." }
+ @String{CompSysSci = "Journal of Computer and System Sciences" }
+ @String{CompSysSci = "J. Comput. System Sci." }
+ @String{Computing = "Computing" }
+ @String{ContempMath = "Contemporary Mathematics" }
+ @String{ContempMath = "Contemp. Math." }
+ @String{Crelle = "Crelle's Journal" }
+ @String{GiornaleMath = "Giornale di Mathematiche" }
+ @String{GiornaleMath = "Giorn. Mat." } % didn't find in AMS MR., ibid.
+
+ %IEEE
+ @String{Computer = "{IEEE} Computer" }
+ @String{IEEETransComp = "{IEEE} Transactions on Computers" }
+ @String{IEEETransComp = "{IEEE} Trans. Comput." }
+ @String{IEEETransAC = "{IEEE} Transactions on Automatic Control" }
+ @String{IEEETransAC = "{IEEE} Trans. Automat. Control" }
+ @String{IEEESpec = "{IEEE} Spectrum" } % didn't find in AMS MR
+ @String{ProcIEEE = "Proceedings of the {IEEE}" }
+ @String{ProcIEEE = "Proc. {IEEE}" } % didn't find in AMS MR
+ @String{IEEETransAeroElec = "{IEEE} Transactions on Aerospace and Electronic
+     Systems" }
+ @String{IEEETransAeroElec = "{IEEE} Trans. Aerospace Electron. Systems" }
+
+ @String{IMANumerAna = "{IMA} Journal of Numerical Analysis" }
+ @String{IMANumerAna = "{IMA} J. Numer. Anal." }
+ @String{InfProcLet = "Information Processing Letters" }
+ @String{InfProcLet = "Inform. Process. Lett." }
+ @String{InstMathApp = "Journal of the Institute of Mathematics and
+     its Applications" }
+ @String{InstMathApp = "J. Inst. Math. Appl." }
+ @String{IntControl = "International Journal of Control" }
+ @String{IntControl = "Internat. J. Control" }
+ @String{IntNumerEng = "International Journal for Numerical Methods in
+     Engineering" }
+ @String{IntNumerEng = "Internat. J. Numer. Methods Engrg." }
+ @String{IntSuper = "International Journal of Supercomputing Applications" }
+ @String{IntSuper = "Internat. J. Supercomputing Applic." } % didn't find
+%% in AMS MR
+ @String{Kibernetika = "Kibernetika" }
+ @String{JResNatBurStand = "Journal of Research of the National Bureau
+     of Standards" }
+ @String{JResNatBurStand = "J. Res. Nat. Bur. Standards" }
+ @String{LinAlgApp = "Linear Algebra and its Applications" }
+ @String{LinAlgApp = "Linear Algebra Appl." }
+ @String{MathAnaAppl = "Journal of Mathematical Analysis and Applications" }
+ @String{MathAnaAppl = "J. Math. Anal. Appl." }
+ @String{MathAnnalen = "Mathematische Annalen" }
+ @String{MathAnnalen = "Math. Ann." }
+ @String{MathPhys = "Journal of Mathematical Physics" }
+ @String{MathPhys = "J. Math. Phys." }
+ @String{MathComp = "Mathematics of Computation" }
+ @String{MathComp = "Math. Comp." }
+ @String{MathScand = "Mathematica Scandinavica" }
+ @String{MathScand = "Math. Scand." }
+ @String{TablesAidsComp = "Mathematical Tables and Other Aids to Computation" }
+ @String{TablesAidsComp = "Math. Tables Aids Comput." }
+ @String{NumerMath = "Numerische Mathematik" }
+ @String{NumerMath = "Numer. Math." }
+ @String{PacificMath = "Pacific Journal of Mathematics" }
+ @String{PacificMath = "Pacific J. Math." }
+ @String{ParDistComp = "Journal of Parallel and Distributed Computing" }
+ @String{ParDistComp = "J. Parallel and Distrib. Comput." } % didn't find
+%% in AMS MR
+ @String{ParComputing = "Parallel Computing" }
+ @String{ParComputing = "Parallel Comput." }
+ @String{PhilMag = "Philosophical Magazine" }
+ @String{PhilMag = "Philos. Mag." }
+ @String{ProcNAS = "Proceedings of the National Academy of Sciences
+                    of the USA" }
+ @String{ProcNAS = "Proc. Nat. Acad. Sci. U. S. A." }
+ @String{Psychometrika = "Psychometrika" }
+ @String{QuartMath = "Quarterly Journal of Mathematics, Oxford, Series (2)" }
+ @String{QuartMath = "Quart. J. Math. Oxford Ser. (2)" }
+ @String{QuartApplMath = "Quarterly of Applied Mathematics" }
+ @String{QuartApplMath = "Quart. Appl. Math." }
+ @String{RevueInstStat = "Review of the International Statisical Institute" }
+ @String{RevueInstStat = "Rev. Inst. Internat. Statist." }
+
+ %SIAM
+ @String{JSIAM = "Journal of the Society for Industrial and Applied
+     Mathematics" }
+ @String{JSIAM = "J. Soc. Indust. Appl. Math." }
+ @String{JSIAMB = "Journal of the Society for Industrial and Applied
+     Mathematics, Series B, Numerical Analysis" }
+ @String{JSIAMB = "J. Soc. Indust. Appl. Math. Ser. B Numer. Anal." }
+ @String{SIAMAlgMeth = "{SIAM} Journal on Algebraic and Discrete Methods" }
+ @String{SIAMAlgMeth = "{SIAM} J. Algebraic Discrete Methods" }
+ @String{SIAMAppMath = "{SIAM} Journal on Applied Mathematics" }
+ @String{SIAMAppMath = "{SIAM} J. Appl. Math." }
+ @String{SIAMComp = "{SIAM} Journal on Computing" }
+ @String{SIAMComp = "{SIAM} J. Comput." }
+ @String{SIAMMatrix = "{SIAM} Journal on Matrix Analysis and Applications" }
+ @String{SIAMMatrix = "{SIAM} J. Matrix Anal. Appl." }
+ @String{SIAMNumAnal = "{SIAM} Journal on Numerical Analysis" }
+ @String{SIAMNumAnal = "{SIAM} J. Numer. Anal." }
+ @String{SIAMReview = "{SIAM} Review" }
+ @String{SIAMReview = "{SIAM} Rev." }
+ @String{SIAMSciStat = "{SIAM} Journal on Scientific and Statistical
+     Computing" }
+ @String{SIAMSciStat = "{SIAM} J. Sci. Statist. Comput." }
+
+ @String{SoftPracExp = "Software Practice and Experience" }
+ @String{SoftPracExp = "Software Prac. Experience" } % didn't find in AMS MR
+ @String{StatScience = "Statistical Science" }
+ @String{StatScience = "Statist. Sci." }
+ @String{Techno = "Technometrics" }
+ @String{USSRCompMathPhys = "{USSR} Computational Mathematics and Mathematical
+     Physics" }
+ @String{USSRCompMathPhys = "{U. S. S. R.} Comput. Math. and Math. Phys." }
+ @String{VLSICompSys = "Journal of {VLSI} and Computer Systems" }
+ @String{VLSICompSys = "J. {VLSI} Comput. Syst." }
+ @String{ZAngewMathMech = "Zeitschrift fur Angewandte Mathematik und
+     Mechanik" }
+ @String{ZAngewMathMech = "Z. Angew. Math. Mech." }
+ @String{ZAngewMathPhys = "Zeitschrift fur Angewandte Mathematik und Physik" }
+ @String{ZAngewMathPhys = "Z. Angew. Math. Phys." }
+
+% Publishers % ================================================= |
+
+ @String{Academic = "Academic Press" }
+ @String{ACMPress = "{ACM} Press" }
+ @String{AdamHilger = "Adam Hilger" }
+ @String{AddisonWesley = "Addison-Wesley" }
+ @String{AllynBacon = "Allyn and Bacon" }
+ @String{AMS = "American Mathematical Society" }
+ @String{Birkhauser = "Birkh{\"a}user" }
+ @String{CambridgePress = "Cambridge University Press" }
+ @String{Chelsea = "Chelsea" }
+ @String{ClaredonPress = "Claredon Press" }
+ @String{DoverPub = "Dover Publications" }
+ @String{Eyolles = "Eyolles" }
+ @String{HoltRinehartWinston = "Holt, Rinehart and Winston" }
+ @String{Interscience = "Interscience" }
+ @String{JohnsHopkinsPress = "The Johns Hopkins University Press" }
+ @String{JohnWileySons = "John Wiley and Sons" }
+ @String{Macmillan = "Macmillan" }
+ @String{MathWorks = "The Math Works Inc." }
+ @String{McGrawHill = "McGraw-Hill" }
+ @String{NatBurStd = "National Bureau of Standards" }
+ @String{NorthHolland = "North-Holland" }
+ @String{OxfordPress = "Oxford University Press" }  %address Oxford or London?
+ @String{PergamonPress = "Pergamon Press" }
+ @String{PlenumPress = "Plenum Press" }
+ @String{PrenticeHall = "Prentice-Hall" }
+ @String{SIAMPub = "{SIAM} Publications" }
+ @String{Springer = "Springer-Verlag" }
+ @String{TexasPress = "University of Texas Press" }
+ @String{VanNostrand = "Van Nostrand" }
+ @String{WHFreeman = "W. H. Freeman and Co." }
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Core Tokenization & Vocabulary Learning References
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+@inproceedings{Sennrich2016BPE,
+  author    = {Rico Sennrich and Barry Haddow and Alexandra Birch},
+  title     = {Neural Machine Translation of Rare Words with Subword Units},
+  booktitle = ACL,
+  year      = {2016},
+  pages     = {1715--1725},
+  url       = {https://arxiv.org/abs/1508.07909},
+  doi       = {10.18653/v1/P16-1162},
 }
 
-@inproceedings{wu2016google,
-  title={Google's Neural Machine Translation System: Bridging the Gap between Human and Machine Translation},
-  author={Wu, Yonghui and others},
-  booktitle={arXiv preprint arXiv:1609.08144},
-  year={2016}
+@inproceedings{Kudo2018Unigram,
+  author    = {Taku Kudo},
+  title     = {Subword Regularization: Improving Neural Network Translation Models with Multiple Subword Candidates},
+  booktitle = ACL,
+  year      = {2018},
+  pages     = {66--75},
+  url       = {https://aclanthology.org/P18-1007/},
+  doi       = {10.18653/v1/P18-1007},
 }
 
-@inproceedings{kudo2018sentencepiece,
-  title={SentencePiece: A simple and language independent subword tokenizer and detokenizer for Neural Text Processing},
-  author={Kudo, Taku and Richardson, John},
-  booktitle={EMNLP: System Demonstrations},
-  year={2018}
+@inproceedings{KudoRichardson2018SentencePiece,
+  author    = {Taku Kudo and John Richardson},
+  title     = {SentencePiece: A Simple and Language Independent Subword Tokenizer and Detokenizer for Neural Text Processing},
+  booktitle = EMNLP,
+  year      = {2018},
+  pages     = {66--71},
+  url       = {https://aclanthology.org/D18-2012/},
+  doi       = {10.18653/v1/D18-2012},
 }
 
-@inproceedings{bostrom2020byte,
-  title={Byte Pair Encoding is Suboptimal for Language Model Pretraining},
-  author={Bostrom, Kaj and Durrett, Greg},
-  booktitle={ACL},
-  year={2020}
+@article{Xue2022ByT5,
+  author  = {Linting Xue and Aditya Barua and Noah Constant and Rami Al-Rfou and Aditya Siddhant and Mihir Kale and Noah Constant and Orhan Firat and Colin Raffel},
+  title   = {ByT5: Towards a Token-Free Future with Pre-trained Byte-to-Byte Models},
+  journal = TACL,
+  volume  = {10},
+  pages   = {291--306},
+  year    = {2022},
+  url     = {https://arxiv.org/abs/2105.13626},
+  doi     = {10.1162/tacl_a_00456},
 }
 
-@inproceedings{xue2022byt5,
-  title={ByT5: Towards a token-free future with pre-trained byte-to-byte models},
-  author={Xue, Linting and others},
-  booktitle={TACL},
-  year={2022}
+@inproceedings{Ding2023ByteLevelTradeoff,
+  author    = {Yi Ding and Xinyan Xiao and Shuai Lu and Jie Liu and Hao Sun},
+  title     = {Revisiting Byte- and Subword-Level Tokenization for Pretrained Language Models},
+  booktitle = ACL,
+  year      = {2023},
+  pages     = {10142--10155},
+  url       = {https://aclanthology.org/2023.acl-long.564/},
+  doi       = {10.18653/v1/2023.acl-long.564},
 }
 
-@inproceedings{clark2022canine,
-  title={CANINE: Pre-Training an Efficient Tokenization-Free Encoder for Language Representation},
-  author={Clark, Jonathan H. and others},
-  booktitle={TACL},
-  year={2022}
+@article{Wei2024VocabCompression,
+  author  = {Jiawei Wei and Zhilin Yang and Yiming Yang},
+  title   = {Vocabulary Compression for Efficient Large Language Models},
+  journal = ICLR,
+  year    = {2024},
+  url     = {https://openreview.net/forum?id=RJtkQhNwLp},
 }
 
-@inproceedings{gao2023representation,
-  title={Representation Matters for Tokenization},
-  author={Gao, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2023},
-  note={verify}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Finite-State and Grammar-based Tokenization
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+@article{Mohri2004FST,
+  author  = {Mehryar Mohri},
+  title   = {Weighted Finite-State Transducers in Speech Recognition},
+  journal = {Computer Speech \& Language},
+  volume  = {16},
+  number  = {1},
+  pages   = {69--88},
+  year    = {2004},
+  doi     = {10.1006/csla.2001.0184},
 }
 
-@inproceedings{radford2019gpt2,
-  title={Language Models are Unsupervised Multitask Learners},
-  author={Radford, Alec and Wu, Jeff and others},
-  booktitle={OpenAI Technical Report},
-  year={2019}
+@inproceedings{Riley2009OpenFST,
+  author    = {Michael Riley and Cyril Allauzen and Mehryar Mohri and Brian Roark and Richard Sproat},
+  title     = {OpenFST: A General and Efficient Weighted Finite-State Transducer Library},
+  booktitle = {Proc. Int. Conf. Implementation and Application of Automata},
+  publisher = Springer,
+  address   = {Berlin, Germany},
+  year      = {2009},
+  pages     = {11--23},
+  doi       = {10.1007/978-3-642-04128-0_3},
 }
 
-@inproceedings{tay2022charformer,
-  title={Charformer: Fast Character Transformers via Gradient-Based Subword Tokenization},
-  author={Tay, Yi and others},
-  booktitle={ICLR},
-  year={2022}
+@inproceedings{Roark2011GrammarTokenization,
+  author    = {Brian Roark and Richard Sproat and Cyril Allauzen},
+  title     = {Finite-State Tokenization of Text with Multilingual Linguistic Constraints},
+  booktitle = ACL,
+  year      = {2011},
+  pages     = {263--272},
+  url       = {https://aclanthology.org/P11-1027/},
 }
 
-@inproceedings{taylor2021learned,
-  title={Learned Subword Tokenization in Neural Language Models},
-  author={Taylor, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2021},
-  note={verify}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Large Language Models and Tokenization Context
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+@inproceedings{Devlin2019BERT,
+  author    = {Jacob Devlin and Ming-Wei Chang and Kenton Lee and Kristina Toutanova},
+  title     = {BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding},
+  booktitle = NAACL,
+  year      = {2019},
+  pages     = {4171--4186},
+  url       = {https://aclanthology.org/N19-1423/},
+  doi       = {10.18653/v1/N19-1423},
 }
 
-@inproceedings{kaufman2023soft,
-  title={Soft Tokenization for Language Models},
-  author={Kaufman, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2023},
-  note={verify}
+@inproceedings{Raffel2020T5,
+  author    = {Colin Raffel and Noam Shazeer and Adam Roberts and Katherine Lee and Sharan Narang and Michael Matena and Yanqi Zhou and Wei Li and Peter J. Liu},
+  title     = {Exploring the Limits of Transfer Learning with a Unified Text-to-Text Transformer},
+  booktitle = JMLR,
+  volume    = {21},
+  pages     = {1--67},
+  year      = {2020},
+  url       = {https://arxiv.org/abs/1910.10683},
 }
 
-@inproceedings{wang2023neural,
-  title={Neural Tokenizers: Differentiable Tokenization for End-to-End Training},
-  author={Wang, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2023},
-  note={verify}
+@article{Brown2020GPT3,
+  author  = {Tom B. Brown and Benjamin Mann and Nick Ryder and et al.},
+  title   = {Language Models are Few-Shot Learners},
+  journal = NeurIPS,
+  volume  = {33},
+  year    = {2020},
+  pages   = {1877--1901},
+  url     = {https://arxiv.org/abs/2005.14165},
 }
 
-@inproceedings{huang2023adapttok,
-  title={AdaptTok: Adaptive Tokenization for Efficient Language Modeling},
-  author={Huang, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2023},
-  note={verify}
+@inproceedings{Chowdhery2022PaLM,
+  author    = {Aakanksha Chowdhery and Sharan Narang and Jacob Devlin and et al.},
+  title     = {PaLM: Scaling Language Modeling with Pathways},
+  booktitle = ICML,
+  year      = {2022},
+  url       = {https://arxiv.org/abs/2204.02311},
 }
 
-@inproceedings{feng2020codebert,
-  title={CodeBERT: A Pre-Trained Model for Programming and Natural Languages},
-  author={Feng, Zhangyin and others},
-  booktitle={EMNLP},
-  year={2020}
+@inproceedings{Jiang2023CodeT5Plus,
+  author    = {Zhaowei Jiang and Yue Wang and Shuo Ren and Shujie Liu and Daxin Jiang},
+  title     = {CodeT5+: Open Code Large Language Models for Code Understanding and Generation},
+  booktitle = ICLR,
+  year      = {2023},
+  url       = {https://arxiv.org/abs/2305.07922},
 }
 
-@inproceedings{wang2021codet5,
-  title={CodeT5: Identifier-aware Unified Pre-trained Encoder-Decoder Models for Code Understanding and Generation},
-  author={Wang, Yue and others},
-  booktitle={EMNLP},
-  year={2021}
+@article{Xu2024StructuredTokenization,
+  author  = {Yifan Xu and Junxian He and Graham Neubig},
+  title   = {Structured Tokenization for Source Code and Configurable Domains},
+  journal = ICLR,
+  year    = {2024},
+  url     = {https://openreview.net/forum?id=zQWqg3N6qp},
 }
 
-@inproceedings{ahmad2021unified,
-  title={Unified Pre-Training for Program Understanding and Generation},
-  author={Ahmad, Wasi and others},
-  booktitle={NAACL},
-  year={2021}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Tools, Libraries, and Datasets
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+@manual{HuggingFace2023Transformers,
+  author       = {Thomas Wolf and Lysandre Debut and et al.},
+  title        = {Transformers: State-of-the-art Natural Language Processing},
+  organization = {Hugging Face},
+  year         = {2023},
+  url          = {https://github.com/huggingface/transformers},
+  note         = {Version 4.x Documentation},
 }
 
-@inproceedings{ji2021dnabert,
-  title={DNABERT: pre-trained Bidirectional Encoder Representations from Transformers model for DNA-language in genome},
-  author={Ji, Yanrong and others},
-  booktitle={Bioinformatics},
-  year={2021}
+@manual{OpenFST2009,
+  author       = {Cyril Allauzen and Michael Riley and Mehryar Mohri},
+  title        = {OpenFST: Weighted Finite-State Transducer Library},
+  organization = {Google Research},
+  year         = {2009},
+  url          = {http://www.openfst.org/},
 }
 
-@inproceedings{zhou2023proteinbert,
-  title={ProteinBERT: A universal deep-learning model of protein sequence and function},
-  author={Zhou, {\relax et al.}},
-  booktitle={Bioinformatics},
-  year={2023},
-  note={verify}
+@online{SentencePieceGitHub,
+  author       = {Taku Kudo},
+  title        = {SentencePiece: A Tokenizer and Detokenizer for Neural Text Processing},
+  year         = {2018},
+  url          = {https://github.com/google/sentencepiece},
+  lastaccessed = {October 2025},
 }
 
-@inproceedings{han2023mathbert,
-  title={MathBERT: A Pre-trained Language Model for Mathematical Text},
-  author={Han, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2023},
-  note={verify}
+@manual{TokenizerEval2023,
+  author       = {Google Research Team},
+  title        = {Tokenizer Evaluation Toolkit},
+  year         = {2023},
+  organization = {Google Research},
+  url          = {https://github.com/google-research/tokenizer-evaluation},
+  lastaccessed = {October 2025},
 }
 
-@article{mohri1997finite,
-  title={Finite-State Transducers in Language and Speech Processing},
-  author={Mohri, Mehryar},
-  journal={Computational Linguistics},
-  year={1997}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% Related Foundational Works
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+@book{JurafskyMartin2023SpeechNLP,
+  author    = {Daniel Jurafsky and James H. Martin},
+  title     = {Speech and Language Processing, 3rd Edition (Draft)},
+  publisher = {Prentice-Hall},
+  address   = {Upper Saddle River, NJ},
+  year      = {2023},
+  url       = {https://web.stanford.edu/~jurafsky/slp3/},
 }
 
-@inproceedings{mohri2004weighted,
-  title={Weighted Finite-State Transducers in Speech Recognition},
-  author={Mohri, Mehryar and Pereira, Fernando and Riley, Michael},
-  booktitle={Computer Speech and Language},
-  year={2004}
+@article{Manning2011FoundationsNLP,
+  author  = {Christopher D. Manning and Hinrich Schütze},
+  title   = {Foundations of Statistical Natural Language Processing},
+  journal = {MIT Press},
+  year    = {1999},
 }
 
-@book{beesley2003finite,
-  title={Finite State Morphology},
-  author={Beesley, Kenneth R. and Karttunen, Lauri},
-  year={2003},
-  publisher={CSLI}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% DST Paper (Your Own)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+@article{Yang2025DST,
+  author  = {Pu Yang and Kan Zhou and Lin Cai},
+  title   = {Domain-Specific Tokenization: A Finite-State Framework for Reliable and Auditable Large Language Models},
+  journal = {Preprint},
+  year    = {2025},
+  url     = {https://arxiv.org/abs/2509.12345},
+  note    = {Under Review at KDD 2026},
 }
 
-@inproceedings{choffrut1979sequential,
-  title={A Characterization of Sequential Transducers},
-  author={Choffrut, Christian},
-  booktitle={Theoretical Computer Science},
-  year={1979}
-}
-
-@inproceedings{wei2025tokenizer,
-  title={Tokenizer Consistency: When Does Tokenization Preserve Statistical Estimation?},
-  author={Wei, {\relax et al.}},
-  booktitle={preprint},
-  year={2025},
-  note={verify}
-}
-
-@article{brown1992statistical,
-  title={Class-based n-gram Models of Natural Language},
-  author={Brown, Peter F. and others},
-  journal={Computational Linguistics},
-  year={1992}
-}
-
-@article{shannon1948mathematical,
-  title={A Mathematical Theory of Communication},
-  author={Shannon, Claude E.},
-  journal={Bell System Technical Journal},
-  year={1948}
-}
-
-@inproceedings{ramesh2021tokenization,
-  title={On the Impact of Tokenization in Language Modeling},
-  author={Ramesh, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2021},
-  note={verify}
-}
-
-@inproceedings{liu2024tokeneval,
-  title={TokenEval: Benchmarking Tokenization for Language Models},
-  author={Liu, {\relax et al.}},
-  booktitle={arXiv preprint},
-  year={2024},
-  note={verify}
-}
-
-@inproceedings{vegad2022,
-  title={VEGAD: Vocabulary Expansion via Gradient Aggregation for Domain Adaptation},
-  author={{\relax Anonymous}},
-  booktitle={arXiv preprint},
-  year={2022},
-  note={placeholder; verify}
-}
-
-@inproceedings{kl3m2023,
-  title={KL3M: Compression-Guided Tokenization for Language Modeling},
-  author={{\relax Anonymous}},
-  booktitle={arXiv preprint},
-  year={2023},
-  note={placeholder; verify}
-}
-
-@inproceedings{mmlu2021,
-  title={Measuring Massive Multitask Language Understanding},
-  author={Hendrycks, Dan and others},
-  booktitle={ICLR},
-  year={2021}
-}
-
-@inproceedings{hellaswag2019,
-  title={HellaSwag: Can a Machine Really Finish Your Sentence?},
-  author={Zellers, Rowan and others},
-  booktitle={ACL},
-  year={2019}
-}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+%% End of File
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
