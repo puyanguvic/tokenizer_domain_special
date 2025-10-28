@@ -1,0 +1,116 @@
+\section{Experiments}
+\label{sec:experiments}
+
+We evaluate the Domain-Specific Tokenization (DST) framework across multiple structured and semi-structured domains, focusing on the design, setup, and evaluation methodology.
+The experiments are designed to assess three main aspects:
+
+\begin{enumerate}
+  \item \textbf{Efficiency:} sequence-length compression and throughput improvement relative to subword baselines.
+  \item \textbf{Reliability:} guaranteed invertibility and deterministic decoding across all domains.
+  \item \textbf{Compatibility:} stability of downstream model performance on general-language benchmarks.
+\end{enumerate}
+
+\subsection{Experimental Setup}
+
+All tokenizers are trained under comparable vocabulary budgets (\placeholder{e.g., 16K–32K}).
+Evaluation spans four representative structured data domains:
+
+\begin{itemize}
+  \item \textbf{Source Code:} \placeholder{Python and Java snippets from open repositories.}
+  \item \textbf{Configuration Logs:} \placeholder{Kubernetes YAML, Nginx, and other service configurations.}
+  \item \textbf{Network Protocols:} \placeholder{HTTP requests and response traces.}
+  \item \textbf{Biosequences:} \placeholder{DNA and protein sequences (k-mer representations).}
+\end{itemize}
+
+For fair comparison, each tokenizer variant—BPE, Unigram, Byte-level, and DST—is applied to the same pretrained Transformer backbone (\placeholder{e.g., BERT-base or RoBERTa-base}) and trained under identical hyperparameters.
+General-language tasks (\placeholder{e.g., MMLU, HellaSwag}) are included to test cross-domain generalization.
+All experiments are conducted on standardized hardware (\placeholder{e.g., A100 40GB}) under identical training and inference configurations.
+
+\subsection{Evaluation Metrics}
+
+We report the following metrics to quantify performance:
+
+\begin{itemize}
+  \item \textbf{Tokens/Sequence:} average number of tokens per input sequence (\placeholder{lower is better}).
+  \item \textbf{Entropy:} mean per-token cross-entropy on held-out data normalized to a baseline tokenizer.
+  \item \textbf{Throughput:} number of processed tokens per second during inference (\placeholder{higher is better}).
+  \item \textbf{Memory Usage:} peak GPU VRAM consumption during inference (\placeholder{lower is better}).
+  \item \textbf{General-Language Performance $\Delta$:} accuracy or perplexity difference on open-domain benchmarks relative to baseline models.
+\end{itemize}
+
+\begin{table*}[!t]
+  \centering
+  \small
+  \begin{tabular}{lcccccc}
+    \toprule
+    Tokenizer & Invertibility & Tokens/Seq & Entropy & Throughput & Memory & Gen.~Perf.~$\Delta$ \\
+    \midrule
+    \placeholder{BPE Baseline} & \placeholder{✓ / ✗} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} \\
+    \placeholder{Unigram (SentencePiece)} & \placeholder{✓ / ✗} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} \\
+    \placeholder{Byte-Level (ByT5)} & \placeholder{✓ / ✗} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} \\
+    \placeholder{Structured Tokenization (Xu et al., 2024)} & \placeholder{✓ / ✗} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} \\
+    \textbf{DST (Ours)} & \textbf{✓ (Exact)} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} & \placeholder{--} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Cross-domain evaluation placeholders for tokenization methods. Metrics normalized to baseline values.}
+  \label{tab:main}
+\end{table*}
+
+\subsection{Qualitative Evaluation}
+
+We further examine qualitative aspects of DST through case studies and visualization:
+
+\begin{itemize}
+  \item \textbf{Syntactic Boundary Alignment:} visualization of token boundaries on structured text (e.g., YAML, HTML, HTTP logs).
+  \item \textbf{Invertibility Verification:} round-trip reconstruction test confirming $\kappa(\tau(x)) = x$ for all samples in held-out corpora.
+  \item \textbf{Deployment Integration:} runtime analysis in real-world pipelines such as \placeholder{configuration classification or protocol inspection}.
+\end{itemize}
+
+\begin{figure}[t]
+  \centering
+  \setlength{\fboxsep}{0pt}\fbox{\rule{0pt}{100pt}\rule{220pt}{0pt}}
+  \caption{Placeholder for sequence length vs. latency across domains.}
+  \label{fig:dst_efficiency}
+\end{figure}
+
+\subsection{Ablation and Sensitivity Design}
+
+Ablation experiments are planned to isolate the effects of different design components:
+
+\begin{itemize}
+  \item Removing grammar priors to evaluate the role of syntactic constraints.
+  \item Varying vocabulary size ($|\mathcal{V}| \in \{8\mathrm{K}, 16\mathrm{K}, 32\mathrm{K}\}$) to study compression trade-offs.
+  \item Adjusting scoring coefficients $(\alpha, \beta, \gamma, \eta)$ in the hybrid candidate-selection objective.
+  \item Disabling DFST determinism to measure its contribution to runtime and reliability.
+\end{itemize}
+
+\begin{table}[t]
+  \centering
+  \small
+  \begin{tabular}{lccc}
+    \toprule
+    Setting & Tokens/Seq & Boundary Violations & Invertibility \\
+    \midrule
+    \placeholder{Full DST (Default)} & \placeholder{--} & \placeholder{--} & \placeholder{✓} \\
+    \placeholder{No Grammar Priors} & \placeholder{--} & \placeholder{--} & \placeholder{✓ / ✗} \\
+    \placeholder{Random Merge Baseline} & \placeholder{--} & \placeholder{--} & \placeholder{✗} \\
+    \placeholder{Byte-Level Tokenization} & \placeholder{--} & \placeholder{--} & \placeholder{✓} \\
+    \bottomrule
+  \end{tabular}
+  \caption{Ablation placeholders for different configurations.}
+  \label{tab:ablation}
+\end{table}
+
+\subsection{Planned Analysis and Reporting}
+
+The final analysis will include:
+
+\begin{itemize}
+  \item Correlation between token-count reduction and end-to-end latency.
+  \item Visualization of token-boundary alignment under different domain grammars.
+  \item Comparative memory/throughput scaling across batch sizes.
+  \item Qualitative reconstruction examples confirming exact reversibility.
+\end{itemize}
+
+All numerical results are left as placeholders to be filled once empirical evaluation is complete.
+This section establishes the experimental design, evaluation protocol, and reporting structure for reproducible measurement of DST’s efficiency, reliability, and compatibility.

@@ -1,0 +1,4 @@
+GET /index.html HTTP/1.1
+Host: example.com
+image: nginx:1.21-alpine
+POST /login.php HTTP/1.0

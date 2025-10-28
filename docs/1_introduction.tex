@@ -1,0 +1,48 @@
+\section{Introduction}
+\label{sec:intro}
+
+Tokenization defines how symbolic data are represented to neural models, directly influencing efficiency, interpretability, and reproducibility \citep{Xue2022ByT5, Ding2023ByteLevelTradeoff}.
+While subword methods such as BPE \citep{Sennrich2016BPE}, Unigram \citep{Kudo2018Unigram}, and SentencePiece \citep{KudoRichardson2018SentencePiece} perform well for natural language, they are poorly suited to structured or semi-formal domains—configuration files, code, markup, or network traces—where syntax and delimiters carry meaning.
+
+A line such as \texttt{image: nginx:1.21-alpine} may be split into a dozen subwords under BPE, fragmenting structure and inflating context length.
+Beyond inefficiency, this fragmentation breaks deterministic reconstruction: the model’s outputs can no longer be inverted to recover the original input, undermining auditability and compliance in regulated environments.
+
+\textbf{Domain-Specific Tokenization (DST)} addresses these challenges by treating tokenization as a \emph{first-class, verifiable component} of the LLM pipeline.
+DST formalizes tokenization as paired mappings $(\tau,\kappa)$—an encoder–decoder pair between strings and token sequences—and proves that estimator correctness in token space is equivalent to perfect reversibility in the original domain.
+It further compiles these mappings into deterministic finite-state transducers (DFSTs) that encode and decode in linear time, ensuring scalability and reproducibility.
+
+In contrast to heuristic subword merges, DST introduces \emph{grammar-guided vocabulary induction}: a procedure that integrates structural priors such as delimiters, tags, or protocol fields into the vocabulary learning process.
+The resulting tokenizer respects domain syntax, maintains byte-level coverage, and guarantees invertibility.
+
+Empirically, DST achieves \textbf{100\% round-trip fidelity} and \textbf{10–20\% token reduction} across structured domains including code, configuration logs, network traffic, and biosequences.
+These gains translate into faster training, lower memory consumption, and improved interpretability without degrading general-language performance.
+DST exports all components to the standard \texttt{tokenizer.json} format, enabling seamless integration with Transformer frameworks such as Hugging Face, PyTorch, or TensorRT.
+
+\begin{figure}[t]
+  \centering
+  \setlength{\fboxsep}{0pt}\fbox{\rule{0pt}{120pt}\rule{240pt}{0pt}}
+  \caption{DST pipeline overview: (I) grammar-guided vocabulary induction, (II) deterministic encoder–decoder (DFST) compilation, and (III) optional probabilistic marginalization for ambiguous patterns.}
+  \label{fig:dst_pipeline}
+\end{figure}
+
+DST is motivated by a simple but powerful observation: tokenization is not merely preprocessing—it is part of the model’s definition.
+By restoring invertibility, introducing domain structure, and enabling efficient finite-state realization, DST turns an opaque engineering step into a \emph{reliable, auditable, and theoretically grounded} foundation for domain-aware LLMs.
+
+\paragraph{Contributions.}
+This work makes four main contributions:
+
+\begin{enumerate}
+  \item \textbf{Theoretical reliability.}
+  We introduce a unified reliability criterion showing that estimator consistency in token space is equivalent to perfect reversibility in the original domain.
+
+  \item \textbf{Finite-state realizability.}
+  We prove that any reversible tokenization satisfying non-erasing and deterministic conditions admits a linear-time deterministic finite-state implementation.
+
+  \item \textbf{Domain-aware vocabulary induction.}
+  We propose a grammar-guided algorithm that integrates structural priors to maintain syntactic integrity while ensuring full byte-level coverage.
+
+  \item \textbf{Empirical validation.}
+  We evaluate DST across structured corpora—including code, configuration, protocol, and biosequence domains—demonstrating substantial token reduction and exact round-trip reconstruction with seamless compatibility to standard Transformer toolchains.
+\end{enumerate}
+
+Together, these contributions redefine tokenization as a \emph{guaranteed, efficient, and interpretable transformation layer}, establishing both the theoretical foundation and practical pathway for reliable domain-aware language modeling.

@@ -1,0 +1,36 @@
+\section{Related Work}
+\label{sec:related}
+
+Tokenization has long been a critical yet underexamined component in natural language processing and large language model (LLM) pipelines.
+It governs the symbolic representation that models learn from, directly influencing efficiency, interpretability, and generalization.
+Existing work on tokenization can be broadly grouped into three complementary perspectives: (i) statistical subword segmentation, (ii) domain-specific and structured tokenization, and (iii) finite-state and information-theoretic foundations.
+
+\paragraph{Statistical Subword Tokenization.}
+Classical subword algorithms such as Byte-Pair Encoding (BPE) \citep{Sennrich2016BPE}, SentencePiece/Unigram \citep{KudoRichardson2018SentencePiece,Kudo2018Unigram}, and WordPiece rely on frequency-based merges to balance vocabulary size and coverage.
+They have proven effective for open-domain natural language, where tokens correspond approximately to morphological units.
+However, these methods rely on corpus-level statistics and normalization heuristics that ignore domain syntax and can destroy invertibility.
+When applied to structured corpora—source code, logs, markup, or configuration files—subword merges often fragment identifiers and delimiters into arbitrary pieces.
+Byte-level or character-level models such as ByT5 \citep{Xue2022ByT5} and Byte-LLM variants \citep{Ding2023ByteLevelTradeoff} preserve coverage and reversibility but at the cost of much longer sequences and increased compute.
+More recent adaptive approaches \citep{Wei2024VocabCompression} co-train vocabularies alongside the model, achieving flexibility but sacrificing transparency, stability, and reproducibility—qualities indispensable for enterprise and regulated environments.
+
+\paragraph{Domain-Specific Tokenization.}
+Several studies have recognized the mismatch between generic tokenizers and specialized structured domains.
+For programming languages, \citet{Jiang2023CodeT5Plus} and related works employ syntax-aware rules or lightweight parsers to preserve boundaries around identifiers, keywords, and punctuation.
+In scientific and biomedical text, fixed-length k-mer tokenizers \citep{Ji2021BioBERT, Brandes2022ProteinBERT} encode biological sequences while respecting alphabetic constraints.
+Likewise, structured data formats (e.g., JSON, YAML, XML) have inspired grammar-constrained segmentation rules to avoid boundary violations.
+These domain-specific heuristics improve modeling performance but typically lack a unified theory of correctness and rarely guarantee invertibility or efficiency.
+A few recent works, such as Structured Tokenization for Configurable Domains \citep{Xu2024StructuredTokenization}, emphasize aligning tokens with syntactic units, while gradient-based vocabulary compression \citep{Wei2024VocabCompression} seeks adaptive compactness.
+Nevertheless, none of these frameworks explicitly connect tokenization reliability to estimator consistency or provide deterministic guarantees of reversibility.
+
+\paragraph{Finite-State and Theoretical Foundations.}
+Finite-state transducers (FSTs) have a long history in computational linguistics as efficient realizations of string-to-string mappings, especially for morphology, pronunciation, and grammar analysis \citep{Mohri2004FST,Roark2011GrammarTokenization}.
+Their deterministic nature enables linear-time encoding and decoding with provable correctness, but their use in modern LLM tokenization remains limited.
+DST builds on this tradition by providing formal conditions—non-erasingness, prefix-freeness, and bounded preimage—under which a tokenizer’s encoder–decoder pair $(\tau,\kappa)$ admits a deterministic finite-state implementation.
+The resulting system not only guarantees $O(|x|)$ runtime but also establishes a rigorous link between statistical estimation and symbolic reversibility:
+if $\kappa\circ\tau=\mathrm{id}$, then likelihood estimation in token space is provably equivalent to estimation in the original domain.
+From an information-theoretic perspective, this equivalence ensures that tokenization preserves the mutual information between input symbols and model variables, minimizing redundancy while retaining interpretability \citep{JurafskyMartin2023SpeechNLP,Ding2023ByteLevelTradeoff}.
+
+\paragraph{Summary.}
+Prior research has primarily optimized tokenization for frequency, adaptivity, or domain coverage.
+In contrast, \textbf{Domain-Specific Tokenization (DST)} introduces \emph{reliability and formal guarantees} as first-class objectives.
+It bridges the gap between theoretical soundness and practical deployability—ensuring that tokenization for structured and enterprise data is not only efficient but also provably reversible, interpretable, and auditable.

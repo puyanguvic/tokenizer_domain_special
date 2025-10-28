@@ -1,0 +1,49 @@
+\section{Motivation and Problem Formulation}
+\label{sec:motivation}
+
+Although tokenization is a fundamental step in all language modeling pipelines, it is often treated as a fixed and opaque pre-processing routine optimized for open-domain natural language.
+Such designs assume linguistic regularities—word boundaries, spaces, and morphology—that do not hold for structured data.
+In enterprise and scientific settings, however, inputs are frequently \emph{semi-formal} or \emph{syntactically constrained}: configuration files, URIs, source code, API calls, or network traces.
+These corpora contain symbolic elements (e.g., \texttt{10.0.0.1}, \texttt{HTTP/1.1}, or \texttt{image: nginx:1.21-alpine}) whose boundaries carry meaning and must remain intact.
+
+Unfortunately, existing subword methods trained solely by frequency statistics tend to fragment such strings into arbitrary pieces, leading to three critical deficiencies:
+
+\begin{itemize}
+  \item \textbf{Inefficiency.}
+  Fragmenting structured substrings increases sequence length by a large factor and reduces effective batch throughput.
+  For example, a YAML configuration key or URL can be split into 8–12 tokens, doubling the input length and compute cost without adding representational value.
+  \item \textbf{Loss of determinism.}
+  Heuristic normalization, subword fallbacks (\texttt{<unk>}), or ambiguous merges make it impossible to reconstruct the original string exactly.
+  This violates reproducibility and auditability—requirements essential for regulated data flows in finance, telecom, or cybersecurity.
+  \item \textbf{Semantic drift.}
+  Token boundaries misaligned with grammar blur symbolic meaning, making it difficult to trace model reasoning, apply domain constraints, or perform rule-based post-processing.
+\end{itemize}
+
+These problems are not merely engineering inconveniences: they fundamentally distort the model’s input–output mapping.
+If a model cannot deterministically map back from token space to its original domain, any statistical guarantee in training space ceases to hold in deployment space.
+
+To formalize the challenge, let $\Sigma$ be a finite alphabet and $\mathcal{V}$ a vocabulary with budget $|\mathcal{V}|\le B$.
+We seek an encoder–decoder pair $(\tau, \kappa)$ satisfying three properties:
+
+\begin{enumerate}
+    \item \textbf{Exact reversibility:} $\kappa\circ\tau = \mathrm{id}$ on all valid domain strings, ensuring perfect reconstruction.
+    \item \textbf{Compactness:} minimize $\mathbb{E}[|\tau(x)|]$, the expected number of tokens per input sequence, subject to (1).
+    \item \textbf{Deterministic efficiency:} encoding and decoding must operate in linear time $O(|x|)$, with no backtracking or nondeterministic branching.
+\end{enumerate}
+
+In this formulation, tokenization is not an arbitrary compression but a constrained optimization problem balancing fidelity, compactness, and computational efficiency.
+DST solves this problem through a formal treatment of tokenization as an \emph{invertible transduction}, establishing a one-to-one correspondence between character sequences and token sequences within the grammar of the domain.
+
+\paragraph{Conceptual view.}
+Consider a domain grammar $\mathcal{G}$ that defines all syntactically valid inputs (e.g., HTTP headers or YAML key–value lines).
+DST learns a vocabulary and mapping $(\tau, \kappa)$ consistent with $\mathcal{G}$, ensuring that token boundaries respect syntactic edges and never violate production rules.
+By contrast, subword tokenizers ignore $\mathcal{G}$, yielding sequences that are statistically convenient but syntactically meaningless.
+
+\paragraph{Research objective.}
+Formally, the goal of Domain-Specific Tokenization is to construct an encoder–decoder pair that achieves \emph{estimator equivalence under reversibility}:
+training a model $Q_\theta$ on tokenized data $\tau(x)$ must yield the same predictive distribution on the original space after decoding, i.e.,
+\[
+\kappa_{\#}Q_\theta \approx P, \qquad \text{whenever } Q_\theta \approx \tau_{\#}P.
+\]
+This equivalence underpins the reliability guarantee proven in Section~\ref{sec:method}.
+DST thereby provides a consistent bridge between symbolic data and neural representations, turning tokenization into a formally auditable transformation rather than an uncontrolled pre-processing heuristic.
