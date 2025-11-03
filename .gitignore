@@ -11,6 +11,8 @@ __pycache__/
 venv/
 env/
 
+# dataset
+data_waf/
 # Packaging / build
 build/
 dist/
