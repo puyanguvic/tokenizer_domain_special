@@ -7,11 +7,29 @@ experiments and diagnostics aligned with the paper.
 
 ## Quickstart
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev,hf]"
+### Prerequisites
 
+- Python 3.10+ available on PATH.
+- `uv` installed (see https://github.com/astral-sh/uv).
+
+### Setup
+
+```bash
+./setup.sh
+source .venv/bin/activate
+```
+
+If you want a different venv path or extras:
+
+```bash
+VENV_DIR=/tmp/ctok-venv ./setup.sh
+./setup.sh --extras dev,hf,transformers
+./setup.sh --no-extras
+```
+
+### Build and run
+
+```bash
 ctok build --corpus data/raw/example.txt --output artifacts/tokenizers/ctok_v1 --config configs/tokenizers/ctok.yaml
 ctok encode --artifact artifacts/tokenizers/ctok_v1 --input data/raw/example.txt --format ids
 ctok eval --artifact artifacts/tokenizers/ctok_v1 --corpus data/raw/example.txt
