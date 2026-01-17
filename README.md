@@ -17,7 +17,10 @@ experiments and diagnostics aligned with the paper.
 ```bash
 ./setup.sh
 source .venv/bin/activate
+source .ctok_env
 ```
+
+`setup.sh` writes `.ctok_env` with default task/model/tokenizer values for `ctok train`.
 
 If you want a different venv path or extras:
 
@@ -77,10 +80,7 @@ hf_tokenizer = CtokHFTokenizer.from_pretrained("artifacts/tokenizers/ctok_v1")
 
 ```bash
 pip install -e ".[transformers,hf]"
-python scripts/finetune_roberta.py \
-  --dataset-config configs/datasets/waf_http.yaml \
-  --model-config configs/models/roberta_base.yaml \
-  --tokenizer artifacts/tokenizers/ctok_v1 \
+ctok train --task waf_http --model roberta_base --tokenizer ctok_v1 \
   --output results/runs/roberta_waf_http
 ```
 

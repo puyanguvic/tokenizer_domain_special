@@ -23,6 +23,7 @@ class TokenizerRuntime:
     def __init__(self, vocab: Vocabulary) -> None:
         self._vocab = vocab
         self._token_to_id = vocab.token_to_id()
+        self._unk_id = vocab.special_ids().get("unk") if vocab.special_tokens else None
         self._root = _TrieNode()
         for token_id, token in enumerate(vocab.tokens):
             node = self._root
@@ -55,9 +56,11 @@ class TokenizerRuntime:
                 char = text[idx]
                 token_id = self._token_to_id.get(char)
                 if token_id is None:
-                    raise ValueError(
-                        f"No token found for character {char!r}; add base charset tokens."
-                    )
+                    if self._unk_id is not None:
+                        ids.append(self._unk_id)
+                        idx += 1
+                        continue
+                    raise ValueError(f"No token found for character {char!r}; add base charset tokens.")
                 ids.append(token_id)
                 idx += 1
             else:
@@ -95,6 +98,10 @@ class BoundaryAwareTokenizerRuntime(TokenizerRuntime):
                 ids.extend(super().encode(text[start:idx]))
             token_id = self._token_to_id.get(ch)
             if token_id is None:
+                if self._unk_id is not None:
+                    ids.append(self._unk_id)
+                    start = idx + 1
+                    continue
                 raise ValueError(f"Boundary character {ch!r} is missing from the vocabulary.")
             ids.append(token_id)
             start = idx + 1

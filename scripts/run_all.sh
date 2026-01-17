@@ -1,4 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# TODO: wire up full pipeline (data prep -> build -> eval -> report).
+# End-to-end paper experiment driver.
+#
+# Usage:
+#   PYTHONPATH=src ./scripts/run_all.sh
+
+PYTHONPATH="${PYTHONPATH:-src}" python scripts/run_paper_experiments.py "$@"

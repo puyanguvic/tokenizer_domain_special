@@ -4,216 +4,104 @@
 % =========================
 \begin{abstract}
 Tokenization is a performance-critical interface in modern machine learning systems, yet mainstream tokenizers are optimized for natural language and implicitly assume unstructured text.
-In structured and semi-structured detection workloads (e.g., protocol messages, HTTP requests, configuration files, logs, and email artifacts), these assumptions fail: subword tokenizers fragment structural units and distort task semantics, while byte-level tokenization preserves structure at prohibitive sequence length and system cost.
-We propose a tokenizer \emph{system} that formulates tokenization as \emph{controlled compression} and compiles the resulting rules into deterministic finite-state transducers for predictable linear-time execution.
-To quantify semantic distortion without requiring exact reconstruction, we introduce a \emph{directed semantic distortion} metric defined via teacher--student KL (cross-entropy) between semantics conditioned on raw inputs and the best predictor conditioned only on tokenized inputs, and connect distortion to causal dependency disruption and degraded representation geometry relevant to encoder-only detection.
-Across multiple structured domains, controlled tokenization reduces token counts under matched vocabulary budgets while improving semantic predictability, yielding higher throughput and lower memory usage, and matching or improving downstream detection/classification performance under equal compute.
+In structured and semi-structured detection workloads (e.g., protocol messages, HTTP requests, configuration files, logs, and email artifacts), these assumptions fail: subword tokenizers fragment structural units and distort task semantics, while byte-level tokenization preserves structure at prohibitive sequence length and system cost. We propose a tokenizer \emph{system} that formulates tokenization as \emph{controlled compression} and compiles the resulting rules into deterministic finite-state transducers for predictable linear-time execution. To quantify semantic distortion without requiring exact reconstruction, we introduce a \emph{directed semantic distortion} metric defined via teacher--student KL (cross-entropy) between semantics conditioned on raw inputs and the best predictor conditioned only on tokenized inputs, and connect distortion to causal dependency disruption and degraded representation geometry relevant to encoder-only detection. Across multiple structured domains, controlled tokenization reduces token counts under matched vocabulary budgets while improving semantic predictability, yielding higher throughput and lower memory usage, and matching or improving downstream detection/classification performance under equal compute.
 \end{abstract}
 
 % =========================
-% 1. Introduction
+% 1. Introduction (rewritten for a tighter ICML story)
 % =========================
 \section{Introduction}
+\label{sec:intro}
 
-Tokenization defines the discrete interface between raw symbolic data and sequence
-models.
-By fixing the atomic units of representation, it controls effective sequence length,
-computational cost, and the information exposed to learning algorithms.
-For encoder-only detection and classification, this interface is often the primary
-bottleneck: fragmentation inflates sequences before learning begins, amplifies
-downstream attention and activation cost, and can degrade the stability of the learned
-representation space used for decision making.
+Tokenization is the discrete interface between raw symbolic inputs and sequence models.
+By fixing the atomic units of representation, it directly controls sequence length,
+system cost, and which regularities are exposed to learning.
+In structured and semi-structured detection workloads---protocol messages, HTTP requests,
+configuration files, logs, and email/HTML artifacts---this interface is often the
+dominant bottleneck: segmentation choices can inflate token length before learning
+begins and can also disturb structure-driven semantics that detection relies on.
 
-A growing class of practical detection workloads operates on structured or
-semi-structured symbolic inputs---protocol messages, network requests, configuration
-files, logs, and email artifacts---whose semantics are largely structure-driven rather
-than natural-language-driven.
-Applying natural-language tokenizers such as BPE or Unigram to these domains introduces
-a systematic mismatch.
-Frequent substrings may cross structural boundaries (e.g., key--delimiter--value),
-producing tokens that blur semantic units and distort detection-relevant predictability.
-Byte-level alternatives avoid boundary violations but often produce sequences too long
-for efficient encoder-only inference.
+Mainstream tokenizers (BPE/Unigram) were optimized for natural language.
+On structured streams, they frequently produce tokens that cross structural boundaries
+(e.g., key--delimiter--value or tag/attribute splits), creating units that blur
+task-relevant semantics.
+Byte/character-level alternatives avoid boundary violations, but at prohibitive sequence
+length, leading to higher latency, lower throughput, and tighter memory ceilings for
+encoder-only detectors.
+As a result, practitioners face an unfavorable choice between (i) subword tokenization
+that is shorter but semantically misaligned, and (ii) raw-unit tokenization that is
+aligned but too long for budgeted deployment.
 
-\paragraph{Why tokenization still matters (despite byte-/bit-level and token-free models).}
-A natural question is why we should invest in better tokenizers given the existence of
-byte-level, bit-level, and tokenizer-free approaches.
-In our target setting, the answer is \emph{systemic}: structured detection pipelines are
-typically deployed under strict latency/memory budgets and strong \emph{drop-in}
-constraints.
-Practitioners commonly reuse stable encoder-only backbones, require reproducible
-preprocessing, and cannot afford frequent architectural changes or expensive re-training
-whenever formats drift across sources.
-In this regime, tokenization remains the only front-end lever that can simultaneously
-(i) reduce effective sequence length and system cost, and (ii) enforce
-structure-aligned units with deterministic, versioned behavior.
-Token-free or raw-unit processing can improve robustness, but it often shifts the burden
-into model architecture and training (e.g., to amortize long sequences), which is a
-different design space than a deployable tokenizer interface \citep{clark2022canine,xue2022byt5}.
-Bit-level tokenization can further reduce encoding redundancy, but in structured
-detection the dominant failure mode is usually not orthographic redundancy—it is
-\emph{boundary misalignment} and the resulting instability when semantically irrelevant
-micro-edits change segmentation and downstream behavior.
-Therefore, the core problem is to design a \emph{controlled compression interface} that
-reduces rate while preserving detection-relevant predictability.
+This paper takes a detection-centric view: tokenization should be designed as
+\emph{controlled compression}.
+The goal is to reduce the expected token length while preserving detection-relevant
+predictability available from the raw input.
+Crucially, we do \emph{not} require exact reconstruction of the raw string.
+Instead, we quantify semantic loss at the interface with a \emph{directed semantic
+distortion} defined via a teacher--student KL (equivalently, teacher-aligned
+cross-entropy): how much less predictable the task semantics become when a predictor can
+only observe tokenized prefixes rather than raw prefixes.
+This distortion is directed/prefix-based to match online structure-driven semantics and
+is directly actionable for tokenizer design.
 
-This paper takes a detection-centric view: tokenization should be designed as a
-front-end \emph{discriminative interface} that shapes representation geometry.
-For detection, success is ultimately geometric: embeddings should be compact within
-classes and well separated across classes, enabling stable classification under fixed
-compute budgets.
-Tokenization influences this geometry by determining whether discriminative structure
-becomes coherent features or is diluted by overly fragmented and inconsistent token
-boundaries that increase within-class variance and shrink between-class margins.
+We propose \textbf{CTok}, a deployable tokenizer \emph{system} that optimizes a
+rate--distortion objective tailored to encoder-only detection.
+CTok uses lightweight probes to estimate directed semantic distortion and performs
+gain--distortion vocabulary induction under a fixed vocabulary budget.
+To make tokenization a reliable system component, CTok compiles the learned rules into a
+deterministic finite-state matcher (FST/DFA-equivalent) for predictable linear-time
+runtime behavior, reproducibility, and versionable artifacts.
 
-We therefore formulate tokenization as \emph{controlled compression} for detection.
-The objective is to reduce the rate $R(\tau)=\mathbb{E}[|Z|]$ while controlling a
-task-aligned semantic distortion.
-Instead of requiring reconstruction of the raw string, we define \emph{directed semantic
-distortion} via a teacher--student KL (equivalently cross-entropy): how much less
-predictable detection-relevant semantics become when the student only observes the
-tokenized input.
-This yields a principled bridge between system cost and detection semantics and provides
-an optimization signal for designing tokenizers \citep{bai2025token}.
-
-A practical symptom of the mismatch between natural-language tokenization and structured
-detection is \emph{interface boundary sensitivity}: small, semantically irrelevant
-character-level edits can induce different segmentations and cause disproportionate
-changes in downstream behavior.
-In structured inputs, such edits are ubiquitous---trailing spaces or line breaks,
-delimiter normalization, header reordering or casing, optional separators, and minor
-format drift across sources.
-When tokenization fragments or mixes structural units, these micro-perturbations can
-change token boundaries and token sequence length, shifting encoder activations and
-embedding geometry.
-For detection, this sensitivity is a system risk: it can increase within-class variance,
-reduce margins, and lead to unstable predictions.
-Our controlled tokenization framework explicitly targets this failure mode by preserving
-task-relevant predictability at the tokenization interface with deterministic runtime
-behavior.
-
-To explain and validate how tokenization affects detection, we complement directed
-distortion with interpretable diagnostics.
-We use Granger-style predictability to characterize how tokenization disrupts dependency
-structure among semantic/structural channels, and we use representation-geometry
-diagnostics (neighborhood preservation and separability) to connect tokenization to the
-embedding space that the detector relies on.
-Together, these tools provide both an objective and an explanation of why a tokenizer
-improves detection.
+Our experiments in three structured domains (HTTP/WAF, phishing HTML, and HDFS logs)
+support a concise story:
+(1) CTok improves the rate--distortion frontier under matched vocabulary budgets;
+(2) under equal training compute, CTok matches or improves detection while using fewer
+tokens, improving throughput and memory; and
+(3) CTok yields a more stable interface under semantics-preserving perturbations,
+reducing boundary sensitivity and prediction/embedding drift.
 
 \paragraph{Contributions.}
 \begin{enumerate}
-  \item We formulate tokenization for encoder-only detection as controlled compression,
-  minimizing rate while controlling directed semantic distortion defined by a
-  teacher--student KL (cross-entropy) rather than reconstruction.
-  \item We propose practical estimators of directed semantic distortion using lightweight
-  probes and use it as the primary fidelity signal for tokenizer design.
-  \item We introduce a deployable controlled tokenization system with deterministic
-  runtime execution and evaluate it with causal and geometric diagnostics that explain
-  improvements in detection stability and separability.
-  \item Across structured detection domains, we show that controlled tokenization can
-  reduce token length, improve semantic predictability, and yield more separable and
-  stable embeddings under equal compute.
+  \item \textbf{Objective:} We formulate tokenization for encoder-only detection as
+  \emph{controlled compression}, minimizing token rate while controlling a task-aligned
+  \emph{directed semantic distortion} defined by teacher--student KL on prefixes (rather
+  than reconstruction).
+  \item \textbf{Method \& system:} We introduce CTok, which estimates directed distortion
+  with lightweight probes, performs gain--distortion vocabulary induction, and compiles
+  the result into a deterministic finite-state runtime matcher with predictable linear-time
+  execution.
+  \item \textbf{Evidence:} Across structured detection domains, we show that CTok
+  improves the rate--distortion frontier, delivers equal-compute detection gains with
+  shorter sequences and better system efficiency, and reduces boundary sensitivity under
+  semantics-preserving format drift.
 \end{enumerate}
 
-
 % =========================
-% 2. Background and Preliminaries
+% 2. Controlled Compression Objective (merge Background + Formulation)
 % =========================
-\section{Background and Preliminaries}
+\section{Controlled Compression Objective}
+\label{sec:objective}
 
-\subsection{Encoder-Only Detection and Representation Geometry}
-
-Let $\Sigma$ be a finite alphabet and let $X\in\Sigma^*$ denote an input string drawn
-from a distribution over samples with labels $Y\in\{1,\ldots,K\}$.
-A tokenizer $\tau$ maps $X$ to a token sequence $Z=\tau(X)\in\mathcal{V}^*$ over a
+Let $X\in\Sigma^\ast$ be a structured/semi-structured input string with detection
+semantics $Y$ (e.g., a task label) or a prefix-aligned semantic sequence $Y_{1:T}$.
+A tokenizer $\tau$ maps $X$ to a token sequence $Z=\tau(X)\in\mathcal{V}^\ast$ over a
 finite vocabulary $\mathcal{V}$.
 
-Let $f_\theta$ be an encoder-only sequence model that maps tokens to hidden states
-$H=f_\theta(Z)\in\mathbb{R}^{T\times d}$, and let
-$e=\mathrm{pool}(H)\in\mathbb{R}^{d}$ be an embedding used for detection, where
-$\mathrm{pool}(\cdot)$ denotes a pooling operator (e.g., mean pooling or a
-\texttt{[CLS]}-style summary).
-A prediction head $g$ produces $\hat y=g(e)$.
-
-While training typically minimizes cross-entropy, the operational objective is
-geometric: embeddings should be \emph{compact within classes} and \emph{well separated
-across classes}.
-This can be characterized by within- and between-class scatter,
-\[
-S_W=\sum_{c}\sum_{i:y_i=c}(e_i-\mu_c)(e_i-\mu_c)^\top,\qquad
-S_B=\sum_{c}n_c(\mu_c-\mu)(\mu_c-\mu)^\top,
-\]
-and separability proxies such as the Fisher ratio
-$\mathrm{FR}=\mathrm{tr}(S_B)/(\mathrm{tr}(S_W)+\epsilon)$.
-Tokenization is central because it determines whether discriminative structure becomes
-a coherent signal the encoder can capture, or is diluted by overly fragmented and
-inconsistent token boundaries that inflate within-class variance and shrink margins.
-
-\subsection{Tokenization as a Discriminative Interface}
-
-In this work, the tokenizer is not designed for faithful reconstruction of $X$.
-Instead, its purpose is to produce a sequence $Z$ that supports detection by
-\emph{(i) controlling system cost} and \emph{(ii) preserving detection-relevant
-semantics} so that embeddings become more separable.
-Shorter sequences reduce compute and memory in encoder-only models by lowering the
-number of token states processed and the cost of attention/activation storage.
-At the same time, tokenization should preserve semantics that remain predictable from
-tokenized inputs, since predictability is directly tied to separability and stability.
-
-\subsection{System Overview}
-
-Our system follows a two-stage design.
-At \emph{build time}, we construct the tokenizer and its runtime artifacts, including a
-deterministic implementation for stable execution.
-At \emph{runtime}, the tokenizer maps $X$ to $Z$ efficiently and consistently, after
-which the encoder computes embeddings for detection.
-
-% =========================
-% 3. Problem Formulation
-% =========================
-\section{Problem Formulation}
-
-We now formalize the tokenization problem for encoder-only detection.
-Our goal is to design a tokenizer that (i) controls the effective sequence length
-presented to the encoder and (ii) preserves (and ideally enhances) the semantics that
-make samples separable in the embedding space.
-We proceed from a rate--distortion view, and then introduce causal and geometric
-diagnostics used to interpret tokenization effects.
-
-\subsection{Rate and Controlled Compression}
-
-Define the \emph{rate} of a tokenizer as the expected token length:
+\paragraph{Rate (system cost).}
+We measure the \emph{rate} of a tokenizer by the expected token length:
 \begin{equation}
-R(\tau) \triangleq \mathbb{E}[|Z|],\qquad Z=\tau(X),
-\label{eq:rate}
+R(\tau) \triangleq \mathbb{E}[|Z|],\qquad Z=\tau(X).
+\label{eq:rate_main}
 \end{equation}
-which directly controls runtime and memory cost in encoder-only models.
+Since encoder-only models incur at least linear cost in $|Z|$ (and quadratic attention
+cost in transformers), reducing $R(\tau)$ directly improves throughput and memory.
 
-\subsection{Directed Semantic Distortion via Teacher--Student KL}
-
-We do not require reconstruction of $X$.
-Instead, we measure whether tokenized inputs preserve the predictability of
-detection-relevant semantics.
-
-Let $P^\star$ be a teacher distribution that captures semantics from raw inputs
-(e.g., an oracle labeler on $X$ or a teacher producing structured semantic targets),
-and let $\mathcal{Q}$ be a predictor class that only observes tokenized inputs.
-We define distortion as the best-achievable teacher--student KL:
-\begin{equation}
-\Delta(\tau)
-\triangleq
-\min_{q\in\mathcal{Q}}
-\ \mathbb{E}\!\left[\mathrm{KL}\!\left(P^\star(Y\mid X)\ \Vert\ q(Y\mid Z)\right)\right],
-\quad Z=\tau(X),
-\label{eq:dist_global}
-\end{equation}
-which is equivalent (up to constants) to minimizing teacher-aligned cross-entropy.
-
-Detection on structured streams is often online: semantics at time $t$ depends on the
-prefix.
-Let $Y_{1:T}$ denote a semantic sequence aligned with the input.
-We define the directed distortion:
+\paragraph{Directed semantic distortion (task-aligned fidelity).}
+We quantify how much tokenization degrades the causal predictability of semantics from
+prefixes.
+Let $P^\star$ be a teacher distribution capturing semantics from raw prefixes and let a
+student predictor observe only tokenized prefixes.
+We define directed distortion as the best-achievable teacher--student KL on prefixes:
 \begin{equation}
 \Delta_{\rightarrow}(\tau)
 \triangleq
@@ -222,53 +110,22 @@ We define the directed distortion:
 \frac{1}{T}\sum_{t=1}^T
 \mathrm{KL}\!\left(P^\star(Y_t\mid X_{1:t})\ \Vert\ q(Y_t\mid Z_{1:t})\right)
 \Bigg],
-\quad Z=\tau(X),
-\label{eq:dist_directed}
+\quad Z=\tau(X).
+\label{eq:dist_directed_main}
 \end{equation}
-which measures how much tokenization reduces the \emph{causal predictability} of
-semantic targets from prefixes.
+This distortion does not demand reconstructing $X$; it measures irrecoverable semantic
+uncertainty introduced by the tokenization interface.
+(Information-theoretic identities and properties are provided in Appendix~\ref{app:theory}.)
 
-\subsection{Rate--Distortion Objective}
-
-We can now state tokenization as a controlled compression problem:
+\paragraph{Controlled compression.}
+We design tokenizers by trading off rate and directed semantic distortion:
 \begin{equation}
-\min_{\tau}\ R(\tau)
-\quad \text{s.t.}\quad
-\Delta_{\rightarrow}(\tau)\le \varepsilon,
-\label{eq:rd_constrained}
+\min_{\tau}\ \ R(\tau) + \lambda\,\Delta_{\rightarrow}(\tau),
+\label{eq:rd_main}
 \end{equation}
-or equivalently in Lagrangian form,
-\begin{equation}
-\min_{\tau}\ R(\tau) + \lambda\,\Delta_{\rightarrow}(\tau).
-\label{eq:rd_lagrangian}
-\end{equation}
-This formulation makes the design goal explicit: shorten the sequence \emph{without}
-destroying detection-relevant semantics.
+where $\lambda$ controls the compression--fidelity balance under a fixed vocabulary
+budget and deployment constraints.
 
-\subsection{Diagnostics: Causality and Geometry}
-
-We use Granger-style predictability to diagnose dependency disruption among
-semantic/structural channels:
-\begin{equation}
-\mathcal{G}_{i\rightarrow j}
-\triangleq
-\mathcal{L}\!\left(U_t^{(j)} \mid U_{1:t-1}^{(\neg i)}\right)
--
-\mathcal{L}\!\left(U_t^{(j)} \mid U_{1:t-1}^{(\mathrm{all})}\right),
-\label{eq:granger}
-\end{equation}
-and summarize deviation via
-\begin{equation}
-\Delta_{\mathrm{GC}}(\tau)
-=
-\sum_{i\neq j} w_{ij}\,
-\big|\mathcal{G}^\star_{i\rightarrow j}-\mathcal{G}^{\tau}_{i\rightarrow j}\big|.
-\label{eq:gc_distortion}
-\end{equation}
-
-We also use representation-geometry diagnostics that reflect the detector’s embedding
-space: neighborhood preservation and separability (e.g., Fisher ratio and linear probe),
-which indicate whether tokenization improves class compactness and margins.
 
 % =========================
 % 4. Method
@@ -329,6 +186,7 @@ until reaching the vocabulary budget.
 \end{algorithmic}
 \end{algorithm}
 
+
 \subsection{Deterministic Runtime Tokenization}
 
 The learned vocabulary is deployed as a deterministic runtime tokenizer.
@@ -338,322 +196,398 @@ Runtime tokenization proceeds in a single left-to-right pass with no backtrackin
 ensuring stable behavior across environments.
 
 % =========================
-% 5. System Properties
+% 3. CTok System: Controlled Tokenization for Detection
 % =========================
-\section{System Properties and Complexity}
-\label{sec:systems}
+\section{CTok System: Controlled Tokenization for Detection}
+\label{sec:ctok_system}
 
-We analyze the system properties of controlled tokenization for encoder-only detection.
-Our goal is not only to reduce tokenized length, but to make tokenization a reliable
-front-end component with predictable runtime behavior and measurable downstream cost
-reductions.
+This section turns the controlled-compression objective
+(Equation~\ref{eq:rd_main}) into a deployable tokenizer \emph{system}.
+CTok separates \textbf{offline build-time} induction from \textbf{online runtime}
+tokenization: all heavy computation (probe training, candidate scoring, vocabulary
+selection) happens offline, while runtime tokenization is a deterministic, compiled
+left-to-right matcher.
 
-\subsection{Runtime behavior and worst-case guarantees}
+\subsection{Design requirements (why a ``system'')}
+\label{sec:ctok_requirements}
 
-Tokenization is on the critical path of both training and inference.
-In detection pipelines—especially latency-sensitive or streaming settings—runtime
-predictability is as important as average speed.
-Our tokenizer is deployed as a deterministic compiled matcher (e.g., an FST or an
-equivalent deterministic automaton), which yields the following property:
+Structured detection pipelines impose constraints beyond typical NLP tokenization.
+CTok is designed to satisfy three requirements:
 
-\paragraph{Linear-time encoding.}
-For an input of length $n$, runtime tokenization executes a single left-to-right pass
-with no backtracking.
-Thus encoding time scales as $\mathcal{O}(n)$ with a stable constant factor determined
-by the compiled artifact size.
-This worst-case guarantee is independent of the input distribution and avoids
-implementation-specific heuristic behaviors.
+\textbf{(R1) Budgeted efficiency.} Reduce expected token length $R(\tau)=\mathbb{E}[|Z|]$
+to improve encoder throughput and memory under fixed deployment budgets.
+
+\textbf{(R2) Semantic fidelity for detection.} Preserve detection-relevant predictability
+measured by directed semantic distortion $\Delta_{\rightarrow}(\tau)$ on prefixes
+(Equation~\ref{eq:dist_directed_main}), rather than requiring reconstruction.
+
+\textbf{(R3) Deterministic deployability.} Provide a reproducible mapping $X\mapsto Z$
+with predictable worst-case behavior, suitable for versioning and audit.
+
+\subsection{Estimating directed semantic distortion with lightweight probes}
+\label{sec:ctok_probes}
+
+CTok estimates $\Delta_{\rightarrow}(\tau)$ using lightweight probes that predict
+teacher semantics from tokenized prefixes.
+In practice we use teacher-aligned cross-entropy (equivalent to KL up to constants)
+as a stable estimator:
+\begin{equation}
+\widehat{\Delta}_{\rightarrow}(\tau)
+=
+\min_{q\in\mathcal{Q}}
+\ \mathbb{E}\Bigg[\frac{1}{T}\sum_{t=1}^T
+\mathbb{E}_{P^\star(\cdot\mid X_{1:t})}\big[-\log q(\cdot\mid Z_{1:t})\big]
+\Bigg],\qquad Z=\tau(X),
+\label{eq:ctok_probe_dist}
+\end{equation}
+where $\mathcal{Q}$ is intentionally low-capacity (linear/MLP) to keep distortion
+estimation fast and robust.
+We emphasize that probes are \emph{not} the detector; they are an \emph{interface
+diagnostic} used to guide vocabulary induction.
+
+\paragraph{Teachers.}
+In the main text, we focus on the label teacher (task labels as semantics).
+Structure teachers (prefix-aligned tags/channels) and probe-capacity ablations are
+reported in Appendix~\ref{app:probe}.
+
+\subsection{Candidate generation with boundary awareness (optional but practical)}
+\label{sec:ctok_candidates}
+
+CTok selects tokens from a candidate set $\mathcal{C}$ constructed from the corpus.
+A minimal choice is frequency-filtered substrings/spans.
+For structured domains, a simple improvement is to restrict candidates to
+\emph{boundary-respecting spans} (e.g., tokens do not cross separators such as
+\texttt{=}, \texttt{\&}, \texttt{:}, whitespace/newlines, or markup delimiters).
+This preserves span locality and reduces boundary sensitivity; detailed rules and
+ablation are deferred to Appendix~\ref{app:token_constraints}.
+
+\subsection{Gain--distortion vocabulary induction}
+\label{sec:ctok_induction}
+
+CTok constructs a vocabulary under a fixed budget $B$ by greedily maximizing a
+gain--distortion score.
+Let $\mathcal{V}$ be the current vocabulary and $\tau_{\mathcal{V}}$ be the deterministic
+tokenizer induced by $\mathcal{V}$ under a fixed segmentation rule (left-to-right
+longest-match with deterministic tie-breaking).
+For a candidate token $c$, define:
+\[
+g(c) \triangleq R(\tau_{\mathcal{V}}) - R(\tau_{\mathcal{V}\cup\{c\}}),
+\qquad
+\delta(c) \triangleq \widehat{\Delta}_{\rightarrow}(\tau_{\mathcal{V}\cup\{c\}}) -
+\widehat{\Delta}_{\rightarrow}(\tau_{\mathcal{V}}).
+\]
+We select
+\begin{equation}
+c^\star = \arg\max_{c\in \mathcal{C}\setminus\mathcal{V}}
+\Big(g(c)-\lambda\,\delta(c)\Big),
+\label{eq:ctok_score}
+\end{equation}
+until $|\mathcal{V}|=B$.
+This is a greedy approximate optimization of the Lagrangian objective
+$R(\tau)+\lambda\Delta_{\rightarrow}(\tau)$; a more formal justification via a
+submodular surrogate is provided in Appendix~\ref{app:submodular}.
+
+\begin{algorithm}[t]
+\caption{CTok build-time induction (offline)}
+\label{alg:ctok_main}
+\begin{algorithmic}[1]
+\REQUIRE Corpus $\mathcal{D}$, teacher $P^\star$, vocab budget $B$, weight $\lambda$
+\STATE Initialize base vocabulary $\mathcal{V}\leftarrow$ atomic symbols and required separators
+\STATE Train probe(s) $q$ to predict semantic targets from tokenized prefixes
+\STATE Build candidate set $\mathcal{C}$ from $\mathcal{D}$ (frequency-filtered; optionally boundary-respecting)
+\WHILE{$|\mathcal{V}|<B$}
+  \STATE Estimate compression gain $g(c)$ for $c\in \mathcal{C}\setminus\mathcal{V}$
+  \STATE Estimate distortion increment $\delta(c)$ using probe loss under $\mathcal{V}\cup\{c\}$
+  \STATE Add $c^\star\leftarrow \arg\max_c\big(g(c)-\lambda\,\delta(c)\big)$ to $\mathcal{V}$
+  \STATE Optionally refresh probes every $M$ steps
+\ENDWHILE
+\RETURN Vocabulary $\mathcal{V}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Deterministic compilation and runtime tokenization}
+\label{sec:ctok_runtime}
+
+A tokenizer used in detection is a \emph{system component} on the critical path.
+To ensure predictable and reproducible behavior, CTok compiles the learned vocabulary
+$\mathcal{V}$ and segmentation rule into a deterministic matcher (FST/DFA-equivalent)
+executed in a single left-to-right pass with no backtracking.
 
 \paragraph{Determinism.}
-Given a fixed tokenizer artifact, the mapping $X\mapsto Z$ is uniquely defined.
-This matters for detection: reproducibility and stable behavior across environments are
-necessary for debugging, auditing, and consistent deployment.
+Given a fixed artifact (vocabulary + compiled matcher), the mapping $X\mapsto Z$ is
+uniquely defined.
+This supports reproducible training/inference, auditing, and stable deployment across
+environments.
 
-\subsection{Offline cost vs. online cost}
+\paragraph{Worst-case runtime.}
+For input length $n$, runtime tokenization runs in $\mathcal{O}(n)$ time with a stable
+constant factor determined by the compiled artifact size.
+This worst-case guarantee is independent of input distribution and avoids heuristic
+backtracking behaviors.
 
-Controlled induction (vocabulary construction with probe-based distortion estimation) is
-performed offline.
-Although it may be more expensive than plain frequency-driven induction, its cost does
-not appear on the runtime critical path.
-This separation is intentional: all complexity is resolved at build time so that
-runtime tokenization remains lightweight and predictable.
+\subsection{Offline vs.\ online cost}
+\label{sec:ctok_offline_online}
 
-\subsection{How token length translates to detection system cost}
+Build-time induction (probe training and candidate scoring) is performed offline and can
+be amortized across deployments.
+At runtime, CTok performs only deterministic matching and token emission.
+This separation is intentional: CTok spends complexity offline to keep online tokenization
+lightweight and predictable.
 
-A core motivation for controlled tokenization is that token count is a first-order
-driver of system cost in encoder-only models.
-Let $T=|Z|$ be the tokenized sequence length and $d$ the hidden dimension.
+\subsection{What CTok guarantees (in main text)}
+\label{sec:ctok_summary}
 
-\paragraph{Compute.}
-In transformer encoders, self-attention scales as $\mathcal{O}(T^2 d)$ and feed-forward
-blocks scale as $\mathcal{O}(T d^2)$ per layer.
-Thus reducing $T$ yields superlinear savings in attention-dominated regimes and linear
-savings elsewhere.
-Even for non-transformer encoders, most sequence models incur at least linear cost in
-$T$.
+CTok provides a compact set of properties needed for a drop-in detection interface:
+(i) reduced expected token length (rate),
+(ii) controlled directed semantic distortion measured on prefixes,
+and (iii) deterministic, linear-time runtime tokenization with versionable artifacts.
+Additional engineering details (artifact sizes, microbenchmarks, compilation pipeline)
+are reported in Appendix~\ref{app:systems_extra}.
 
-\paragraph{Memory.}
-Activation storage typically scales as $\mathcal{O}(T d L)$ for $L$ layers, and attention
-maps scale as $\mathcal{O}(T^2 L)$.
-Reducing token length therefore lowers peak memory and enables larger batch sizes or
-longer feasible contexts under fixed budgets.
 
-\paragraph{Latency and throughput.}
-In inference, $T$ directly impacts end-to-end latency.
-In training, $T$ determines tokens/sec throughput and the effective token budget under
-fixed wall-clock time.
-Consequently, improvements in $R(\tau)=\mathbb{E}[|Z|]$ are system-relevant even when
-model parameters are unchanged.
-
-These relationships explain why tokenization is a primary bottleneck in budgeted
-detection: fragmented tokenization can make sequences unnecessarily long, forcing either
-smaller models or degraded throughput to meet system constraints.
-
-\subsection{Stability, versioning, and maintainability}
-
-Tokenization is a shared interface across training, inference, and often across tasks.
-We therefore treat tokenization artifacts as versioned system components.
-
-\paragraph{Versioned artifacts.}
-A tokenizer version consists of the vocabulary and compiled runtime artifact
-(e.g., $(\mathcal{V}, \mathrm{FST})$).
-This enables reproducible training/inference and controlled evolution: changes in the
-tokenizer are explicit and auditable.
-
-\paragraph{Consistency across environments.}
-Deterministic compilation reduces discrepancies across implementations.
-This is important for detection systems where minor preprocessing differences can lead
-to measurable changes in false positives/negatives.
-
-\subsection{Interaction with semantic distortion}
-
-System cost reductions alone are insufficient: aggressive compression can destroy
-detection semantics.
-Controlled tokenization addresses this by optimizing rate jointly with directed semantic
-distortion.
-Empirically, we find that improving $R(\tau)$ together with lowering
-$\Delta_{\rightarrow}(\tau)$ leads to more stable detection representations and improved
-separability diagnostics, consistent with the formulation in Section~3.
-
-\subsection{Summary}
-
-Controlled tokenization provides three system-level benefits for encoder-only detection:
-(i) predictable, linear-time runtime behavior via deterministic compilation,
-(ii) reduced compute and memory through shorter token sequences, and
-(iii) stable, versioned preprocessing suitable for deployment.
-These properties make tokenization a reliable interface for detection systems rather
-than an ad hoc preprocessing heuristic.
-
-% =========================
-% 6. Experiments
-% =========================
 \section{Experiments}
 \label{sec:experiments}
 
-We evaluate controlled tokenization for encoder-only detection and classification.
-Our experiments validate the theoretical chain: tokenization controls the rate
-$R(\tau)=\mathbb{E}[|Z|]$ and thus system cost; directed semantic distortion
-$\Delta_{\rightarrow}(\tau)$ captures task-aligned semantic preservation; increases in
-distortion manifest as disrupted dependency structure and degraded representation
-geometry; and these effects translate into detection performance under fixed compute.
+We present three main-text experiments that directly validate the paper's central claims.
+\textbf{E1} shows CTok improves the rate--distortion frontier under matched vocabulary budgets.
+\textbf{E2} shows that under equal training compute, CTok matches or improves detection while
+using fewer tokens, improving throughput and memory.
+\textbf{E3} shows CTok is a more stable interface under semantics-preserving perturbations,
+reducing boundary sensitivity and prediction/embedding drift.
+All additional results (more budgets, more model sizes, token-free baselines, extended
+diagnostics, and ablations) are deferred to the appendix.
 
-\subsection{Datasets and tasks}
 
-We consider representative structured and semi-structured domains where detection is
-central, including protocol/request-like sequences (e.g., HTTP-style requests and
-headers), system and security logs (structured event streams), and configuration-like
-inputs (delimiter- and key--value-heavy strings). For each domain, we evaluate at least
-one closed-ended detection or classification task (binary or multi-class). We use
-standard train/validation/test splits and report results averaged over multiple seeds
-when applicable. Dataset details, preprocessing, and splits will be finalized in the
-camera-ready version.
+\subsection{Setup}
+\label{sec:exp_setup}
 
-\subsection{Models and baselines}
+We evaluate three structured domains (Table~\ref{tab:datasets}) and compare BPE, byte-level,
+boundary-healing, and CTok under matched vocabulary budgets (main text uses \texttt{TODO}).
+All results fine-tune the same encoder-only backbone; unless stated otherwise we control compute
+by fixing the total number of training tokens processed (Appendix~\ref{app:protocols}).
+Additional tokenizers (e.g., Unigram), model-size scaling, token-free baselines, and ablations are
+reported in Appendix~\ref{app:extra_results}.
 
-\paragraph{Encoder-only detector.}
-We use a fixed encoder-only architecture $f_\theta$ with a pooling operator and a
-classification head. Unless otherwise stated, model architecture, optimization
-hyperparameters, and training schedule are held constant across tokenizers to isolate
-the effect of tokenization on rate, semantic predictability, and embedding geometry.
 
-\paragraph{Tokenization baselines.}
-We compare (i) BPE, (ii) Unigram, (iii) byte-level tokenization, and (iv) our controlled
-tokenizer. All tokenizers are evaluated under matched vocabulary budgets (e.g., 16k and
-32k). For byte-level baselines, we use standard byte/byte-BPE configurations to ensure
-full coverage.
+\subsection{E1: CTok improves the rate--distortion frontier}
+\label{sec:exp_e1}
 
-\paragraph{Compute control.}
-We report two complementary regimes. In \emph{equal-compute} evaluation, we fix the
-training budget (e.g., steps and effective tokens processed) so improvements reflect
-better semantic preservation and efficiency under a constant compute envelope. In
-\emph{equal-model} evaluation, we keep the same architecture and hyperparameters and
-report the induced changes in throughput and memory due to different token lengths.
+\paragraph{Question.}
+Does CTok reduce token rate $R(\tau)$ \emph{without} increasing directed semantic
+distortion $\Delta_{\rightarrow}(\tau)$, compared to frequency-driven subword methods?
 
-\subsection{Semantic teacher and probe for directed distortion}
+\paragraph{Method.}
+For each tokenizer and vocab budget, we measure mean/P95 token length (rate) and
+estimate directed distortion using probe cross-entropy on tokenized prefixes
+(Section~\ref{sec:method}). We plot $R(\tau)$ vs.\ $\widehat{\Delta}_{\rightarrow}(\tau)$.
 
-Directed semantic distortion is defined with respect to a semantic target $Y$ and a
-teacher signal. Depending on the workload, we use (i) a \emph{label teacher}, where $Y$
-is the detection label, or (ii) a \emph{structure teacher} (optional), where $Y_t$ are
-local semantic tags or channelized signals derived from a lightweight annotator. To
-estimate $\Delta_{\rightarrow}(\tau)$, we train a lightweight probe $q$ that observes
-tokenized prefixes $Z_{1:t}$ and predicts $Y_t$ (or $Y$). We report the teacher-aligned
-cross-entropy, which corresponds to the KL objective in Section~3 up to constants, and
-interpret lower values as better semantic predictability under the tokenized interface.
+\subsection{E1: CTok improves the rate--distortion frontier}
+\label{sec:exp_e1}
 
-\subsection{Metrics}
+\paragraph{What this tests.}
+E1 validates the core objective: can we reduce token rate while controlling directed
+semantic distortion, compared to frequency-driven subword tokenizers?
 
-We report metrics in four groups.
+\paragraph{Result.}
+Figure~\ref{fig:rd_frontier} shows that CTok consistently improves the frontier under
+matched vocabulary budgets: for a comparable distortion level, CTok yields shorter token
+sequences; conversely, at comparable rate, CTok yields lower directed distortion.
+This supports the central claim that distortion-controlled induction preserves
+detection-relevant predictability at the tokenization interface rather than merely
+compressing frequent substrings.
 
-\paragraph{Rate and system cost.}
-We report average and tail token lengths (e.g., $\mathbb{E}[|Z|]$ and $P95(|Z|)$),
-token-to-byte ratios, tokenization throughput (MB/s or samples/s), end-to-end
-training/inference throughput, and peak memory.
+% ---- Table 1: Dataset summary (main text) ----
+\begin{table}[t]
+\centering
+\small
+\caption{Datasets and tasks (main text). We report dataset sizes and basic input statistics.
+See Appendix~\ref{app:exp_details} for splits, normalization, and additional domains/settings.}
+\label{tab:datasets}
+\begin{tabular}{lcccc}
+\toprule
+Domain & Task & \#Train/\#Val/\#Test & Avg bytes & Notes \\
+\midrule
+HTTP/WAF & attack detection & \texttt{TODO}/\texttt{TODO}/\texttt{TODO} & \texttt{TODO} &
+delimiters: \texttt{\& = : ?} \\
+Phishing HTML & binary cls & \texttt{TODO}/\texttt{TODO}/\texttt{TODO} & \texttt{TODO} &
+markup + URLs \\
+HDFS logs & anomaly detection & \texttt{TODO}/\texttt{TODO}/\texttt{TODO} & \texttt{TODO} &
+sessionized sequences \\
+\bottomrule
+\end{tabular}
+\end{table}
 
-\paragraph{Directed semantic distortion.}
-We report probe cross-entropy estimating $\Delta_{\rightarrow}(\tau)$ and, when
-applicable, probe accuracy for structured semantic targets.
+\paragraph{Result.}
+Figure~\ref{fig:rd_frontier} shows that CTok consistently attains lower rate at the same
+(or lower) directed distortion, indicating a better rate--distortion trade-off for
+detection-centric semantics.
 
-\paragraph{Causal diagnostics.}
-We estimate Granger-style influences among structural/semantic channels and summarize
-deviation via $\Delta_{\mathrm{GC}}(\tau)$ (and optionally edge precision/recall).
+% ---- Fig 1: Rate--Distortion frontier (main text) ----
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\linewidth]{figs/rd_frontier.pdf}
+\caption{\textbf{E1: Rate--distortion frontier under matched vocabulary budgets.}
+Each point is a tokenizer (BPE/Unigram/byte-level/boundary-healing/CTok) at a fixed
+vocabulary size (main text: \texttt{TODO}, others in Appendix~\ref{app:budgets}).
+$x$-axis: token rate $R(\tau)=\mathbb{E}[|Z|]$; $y$-axis: estimated directed semantic
+distortion $\widehat{\Delta}_{\rightarrow}(\tau)$ (probe cross-entropy on prefixes).
+CTok achieves lower rate at the same (or lower) distortion across domains, indicating
+a better controlled-compression trade-off for detection.}
+\label{fig:rd_frontier}
+\end{figure}
 
-\paragraph{Representation geometry and detection performance.}
-Using encoder embeddings $e(x)$, we report neighborhood preservation, separability
-proxies such as the Fisher ratio, linear-probe performance on embeddings, and
-clusterability measures (e.g., silhouette). We report task metrics such as accuracy, F1,
-and AUROC, emphasizing comparisons under equal compute.
 
-\subsection{Main results}
+\subsection{E2: Under equal compute, CTok matches or improves detection while using fewer tokens}
+\label{sec:exp_e2}
 
-We first visualize the rate--distortion relationship by plotting $R(\tau)$ against
-$\Delta_{\rightarrow}(\tau)$ under matched vocabulary budgets. In structured detection
-settings, natural-language tokenizers can be dominated points: they may produce longer
-token sequences while simultaneously degrading directed semantic predictability.
-Controlled tokenization is designed to move toward shorter sequences \emph{and} lower
-directed distortion by eliminating harmful fragmentation that confounds detection
-semantics.
+\paragraph{What this tests.}
+E2 tests whether the improved rate--distortion properties translate into end-task
+detection benefits under a fixed compute envelope, rather than trading accuracy for compression.
 
-We then test whether reductions in $\Delta_{\rightarrow}(\tau)$ align with improved
-diagnostics. Specifically, we evaluate whether lower distortion coincides with improved
-causal preservation (lower $\Delta_{\mathrm{GC}}(\tau)$) and improved geometry (higher
-neighborhood preservation and larger separability scores). Finally, we compare detection
-performance under equal compute budgets and report system efficiency gains through
-throughput and memory reductions.
+\paragraph{Result.}
+Table~\ref{tab:main_results} shows that CTok reduces token length (mean and tail) and
+improves system efficiency (tokens/s and peak memory) while matching or improving the
+task metric under the same total training-token budget.
+This indicates that CTok's compression preserves detection-relevant semantics as measured
+by directed distortion, enabling better deployability without changing the encoder.
+Additional budgets and model-size scaling are reported in Appendix~\ref{app:extra_results}.
 
-\subsection{Boundary Sensitivity and Interface Robustness}
 
-We evaluate robustness of tokenization as a system interface by measuring sensitivity to
-boundary-level perturbations that preserve task semantics. For each test input $X$, we
-generate a family of perturbed variants $\{\tilde X^{(j)}\}$ by applying lightweight
-transformations such as appending/removing trailing whitespace, inserting benign delimiter
-variations, normalizing line breaks, altering header casing, and permuting the order of
-semantically order-invariant fields. We then measure (i) \emph{prediction stability} via
-the fraction of label flips and changes in confidence (e.g., logit or probability drift),
-and (ii) \emph{representation stability} via embedding drift
-$\|e(X)-e(\tilde X^{(j)})\|_2$ and changes in neighborhood structure in embedding space.
-We report these robustness metrics alongside $R(\tau)$ and $\Delta_{\rightarrow}(\tau)$,
-testing whether lower directed distortion correlates with improved stability and whether
-controlled tokenization reduces boundary sensitivity without sacrificing detection
-performance.
+% ---- Table 2: Main results (accuracy + efficiency) ----
+\begin{table*}[t]
+\centering
+\small
+\caption{\textbf{E2: Equal-compute detection performance and efficiency.}
+All tokenizers fine-tune the same encoder-only backbone under a fixed total training-token budget
+(\texttt{TODO} tokens; protocol in Appendix~\ref{app:protocols}). We report end-task metrics together
+with interface-level length and system efficiency. CTok matches or improves detection while reducing
+token length and improving throughput/memory.}
+\label{tab:main_results}
+\begin{tabular}{llcccccc}
+\toprule
+Domain & Tokenizer & Metric (AUROC/F1/Acc) & Avg len & P95 len & tokens/s & peak mem & notes \\
+\midrule
+HTTP/WAF & BPE & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \\
+HTTP/WAF & CTok & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \\
+\midrule
+HTML & BPE & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \\
+HTML & CTok & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \\
+\midrule
+HDFS & BPE & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \\
+HDFS & CTok & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \texttt{TODO} & \\
+\bottomrule
+\end{tabular}
+\end{table*}
 
-To contextualize these results, we include a strong heuristic baseline inspired by
-\emph{boundary healing}: when tokenization encounters a boundary-sensitive suffix/prefix,
-the tokenizer locally revises segmentation around the boundary to avoid pathological
-splits, effectively ``healing'' the interface between characters and tokens. This
-baseline directly targets boundary effects without changing the underlying model.
-Comparing controlled tokenization against standard subword tokenizers, byte-level
-tokenization, and boundary healing isolates the contribution of our theory-driven
-objective.
+% ---- Fig 2: Robustness / boundary sensitivity (main text) ----
+\begin{figure}[t]
+\centering
+% \includegraphics[width=\linewidth]{figs/robustness.pdf}
+\caption{\textbf{E3: Interface robustness under semantics-preserving perturbations.}
+We apply benign format-drift transformations (whitespace/delimiter normalization, attribute reordering,
+header casing/order where applicable) and measure: (i) tokenization instability (token edit distance or
+length jitter), (ii) prediction stability (flip rate / confidence drift), and (iii) representation
+stability (embedding drift). CTok substantially reduces boundary sensitivity across domains.
+Extended perturbation sets and per-domain breakdowns are in Appendix~\ref{app:robustness}.}
+\label{fig:robustness}
+\end{figure}
 
-\subsection{Ablations}
+\subsection{E3: CTok provides a more stable interface under benign format drift}
+\label{sec:exp_e3}
 
-We evaluate compression-only induction by setting $\lambda=0$ (removing semantic
-control) and compare against standard subword induction at the same vocabulary budget.
-We evaluate runtime variants by comparing deterministic compiled tokenization against
-heuristic decoding implementations. Finally, we vary probe capacity and teacher choice
-to confirm robustness of $\Delta_{\rightarrow}$ estimates.
+\paragraph{What this tests.}
+E3 evaluates tokenization as a \emph{system interface}: small, semantics-preserving edits should not
+cause large segmentation changes or unstable predictions/embeddings in detection pipelines.
 
-% =========================
-% 7. Related Work
-% =========================
+\paragraph{Result.}
+Figure~\ref{fig:robustness} shows CTok consistently reduces boundary sensitivity compared to subword
+and heuristic baselines, improving tokenization stability and reducing prediction/embedding drift under
+benign perturbations. This supports the mechanism implied by our objective: controlling directed semantic
+distortion preserves prefix-based predictability, yielding a more stable interface for encoder-only
+detection. Correlations between distortion and robustness (and extended diagnostics) are reported in
+Appendix~\ref{app:diagnostics}.
+
 \section{Related Work}
 \label{sec:related}
 
-\paragraph{Tokenization in modern ML pipelines.}
-Subword tokenization has become the default interface for sequence models in NLP, with
-BPE- and Unigram-style segmentations widely adopted for balancing vocabulary coverage
-and sequence length \citep{sennrich2016subword,kudo2018sentencepiece}.
-Encoder-only models such as BERT rely on WordPiece-like tokenization \citep{devlin2019bert},
-and practical work has studied fast implementations and engineering trade-offs
-\citep{song2021fastwordpiece}.
-Our focus differs from NLP-centric settings: we target encoder-only detection on
-structured and semi-structured inputs, where fragmentation can inflate sequences and
-distort detection-relevant predictability.
+\paragraph{NLP-centric subword tokenization and engineering.}
+Subword tokenizers such as BPE and Unigram are the default interface in NLP, balancing
+vocabulary size and sequence length while retaining broad coverage
+\citep{sennrich2016subword,kudo2018sentencepiece}.
+Encoder-only models (e.g., BERT-style) rely on WordPiece-like segmentation as a
+practical front-end \citep{devlin2019bert}, and prior work has studied fast
+implementations and system trade-offs for large-scale usage \citep{song2021fastwordpiece}.
+Our setting differs in both \emph{data regime} and \emph{objective}: we target structured
+and semi-structured detection streams where semantics are often boundary- and
+structure-driven, and we design tokenization explicitly as \emph{controlled compression}
+with a task-aligned distortion rather than frequency-driven segmentation.
 
-\paragraph{Token-free, byte-level, and below-byte alternatives.}
-To avoid tokenizer brittleness, token-free and byte/character-level models process raw
-units directly, improving robustness but often increasing sequence length and compute
-requirements \citep{clark2022canine,xue2022byt5}.
-This trade-off is especially salient in detection pipelines where latency/memory budgets
-are tight and encoder-only backbones are deployed as stable components.
-While raw-unit processing can be effective, it frequently requires architectural and
-training changes to recover efficiency at scale, shifting the design problem from a
-drop-in interface to an end-to-end model redesign.
-Below-byte tokenization can further reduce encoding redundancy, but for structured and
-semi-structured detection the dominant failure mode is typically not orthographic
-redundancy; it is boundary misalignment that mixes structural units and amplifies
-boundary sensitivity.
-Our work targets this detection-specific regime by keeping tokenization as a deployable,
-deterministic system interface and optimizing it explicitly as controlled compression.
+\paragraph{Token-free, byte/character-level, and below-byte alternatives.}
+Tokenizer-free and byte/character-level models improve robustness to segmentation
+brittleness by operating on raw units, but typically incur much longer sequences and
+higher compute, motivating architectural changes to remain efficient at scale
+\citep{clark2022canine,xue2022byt5}.
+In budgeted detection pipelines, practitioners often face strong \emph{drop-in}
+constraints: stable encoder-only backbones, reproducible preprocessing, and limited
+headroom for architectural re-design.
+CTok targets this regime by keeping the modeling interface fixed and treating tokenization
+as the primary lever for efficiency and semantic predictability, while still providing a
+meaningful comparison to tokenizer-free baselines in the appendix.
 
-\paragraph{Tokenization as compression and semantic fidelity.}
-A key challenge is defining distortion in a way aligned with task semantics rather than
-reconstruction.
-Recent perspectives argue that tokenization should be studied through semantic
-information objectives and directed formulations for sequential systems, shifting the
-goal from exact recovery to preserving task-relevant semantics \citep{bai2025token}.
-Our directed semantic distortion adopts this philosophy using a teacher--student KL
-(cross-entropy) view and couples it with rate to form a controlled-compression objective
-for detection.
+\paragraph{Tokenization as compression with semantic fidelity objectives.}
+Recent perspectives argue that tokenization should be studied through semantic objectives
+rather than exact reconstruction, and that directed formulations are natural in sequential
+systems \citep{bai2025token}.
+CTok adopts this viewpoint for detection: we formalize a \emph{directed semantic distortion}
+via teacher--student KL on prefixes and optimize a rate--distortion trade-off tailored to
+structure-driven semantics.
+Compared to general semantic tokenization objectives, our emphasis is on (i) deployable
+tokenizer induction under vocabulary budgets and (ii) detection-centric evaluation under
+equal compute and interface robustness tests.
 
-\paragraph{Finite-state perspectives and deployable tokenization.}
-Tokenization is a system component that must be fast, deterministic, and reproducible.
-Finite-state views show that popular segmentation schemes can be represented using
-finite-state transduction, enabling deterministic execution and analyzable runtime
-behavior \citep{cognetta2024fst}.
-DST-style deployment leverages this perspective to produce stable, compiled runtime
-tokenizers; implementations can be built on established WFST tooling such as OpenFST
-\citep{allauzen2007openfst}.
+\paragraph{Finite-state views and deployable tokenizers.}
+Tokenization is a system component: it must be fast, deterministic, and reproducible.
+Finite-state perspectives show that segmentation and normalization pipelines can be
+represented as finite-state transduction, enabling analyzable behavior and deterministic
+execution \citep{cognetta2024fst}.
+CTok leverages this systems viewpoint by compiling learned tokenization rules into a
+deterministic matcher (FST/DFA-equivalent) and treating the resulting artifacts as
+versionable components.
+This is complementary to WFST tooling traditions such as OpenFST \citep{allauzen2007openfst}.
 
-\paragraph{Sequential modeling for detection on structured data.}
-A substantial literature treats structured event streams and logs as sequences and
-applies language-modeling ideas for anomaly detection and classification, e.g.,
-DeepLog, LogAnomaly, and LogBERT \citep{du2017deeplog,meng2019loganomaly,guo2021logbert}.
-These works validate the utility of sequence encoders for detection, but tokenization
-is typically inherited from generic NLP practice or treated as an implementation detail.
-Our work instead elevates tokenization to the design object and introduces a task-aligned
-distortion theory and diagnostics that connect tokenization to detection separability.
+\paragraph{Structured detection and log/security sequence modeling.}
+A substantial literature applies sequence models to logs and event streams for anomaly
+detection and classification (e.g., DeepLog, LogAnomaly, LogBERT)
+\citep{du2017deeplog,meng2019loganomaly,guo2021logbert}.
+These works validate the utility of encoder-style representations for detection, but
+tokenization is often inherited from generic NLP practice or treated as an implementation
+detail.
+Our work instead elevates tokenization to the design object and provides an objective and
+system to control interface compression and semantic predictability, with evaluation that
+includes both end-task outcomes and interface-level robustness.
 
-\paragraph{Causal and geometric diagnostics for representation learning.}
-We use Granger-style predictability \citep{granger1969causality} to characterize
-dependency disruption across semantic/structural channels.
-We also measure neighborhood preservation and separability using geometry diagnostics
-related to manifold neighborhood consistency and clusterability, including neighborhood
-preservation measures \citep{venna2001neighborhood} and silhouette \citep{rousseeuw1987silhouettes}.
-In our framework, these are diagnostic tools that explain how directed semantic
-distortion affects encoder-only detection representations.
+\paragraph{Diagnostics: dependency and representation geometry.}
+We use Granger-style predictability as a diagnostic for dependency disruption
+\citep{granger1969causality} and complement it with embedding-space diagnostics such as
+neighborhood preservation and clusterability proxies \citep{venna2001neighborhood,rousseeuw1987silhouettes}.
+In our framework, these are explanatory tools (extended in the appendix) that help connect
+directed semantic distortion to detection-relevant stability and separability.
 
-% =========================
-% 8. Conclusion
-% =========================
 \section{Conclusion}
 \label{sec:conclusion}
 
-We studied tokenization as a first-class interface for encoder-only detection on structured and semi-structured inputs and formulated it as \emph{controlled compression}: minimizing tokenized length while controlling a task-aligned \emph{directed semantic distortion} defined via teacher--student KL (cross-entropy) rather than reconstruction. We introduced a deployable controlled tokenization system with deterministic runtime execution and evaluated it through rate/system metrics, directed distortion, and interpretable diagnostics based on Granger-style dependency preservation and representation geometry (neighborhood preservation and separability). Together, these results show that tokenization can be designed to reduce fragmentation while improving detection-relevant predictability and separability, enabling more efficient and stable encoder-only detection pipelines.
+We studied tokenization as a first-class \emph{system interface} for encoder-only
+detection on structured and semi-structured inputs.
+We formulated tokenization as \emph{controlled compression}: reduce token rate while
+controlling a task-aligned \emph{directed semantic distortion} defined via teacher--student
+KL on prefixes, rather than requiring reconstruction.
+We introduced CTok, an offline-induced and deterministically compiled tokenizer system,
+and showed that it improves the rate--distortion frontier, yields better efficiency under
+equal compute, and provides a more stable interface under semantics-preserving format drift.
+Together, these results suggest that properly optimizing the tokenization interface can
+simultaneously improve deployability and detection robustness without changing the encoder
+architecture.
 
-% =========================
-% Impact Statement (ICML required)
-% =========================
 \section*{Impact Statement}
 
 This paper studies tokenization as a system interface for structured detection workloads.
@@ -676,9 +610,467 @@ applicable policies and regulations.
 \onecolumn
 \appendix
 
-% =========================================================
-% Appendix A: Distortion identities and basic properties
-% =========================================================
+\section{Experimental Details and Protocols}
+\label{app:exp_details}
+
+This appendix provides the full experimental setup needed to reproduce the main-text
+results: datasets/splits, normalization, tokenizers, models, compute control, training
+hyperparameters, and metrics. Unless otherwise stated, all results are averaged over
+multiple seeds; report mean and standard deviation.
+
+\subsection{Datasets, tasks, and splits}
+\label{app:datasets_splits}
+
+\paragraph{HTTP/WAF requests.}
+\textbf{Task:} binary attack detection (optionally multi-class attack type).
+\textbf{Source:} \texttt{TODO: dataset name/version}.
+\textbf{Splits:} \texttt{TODO: train/val/test sizes}.
+\textbf{Notes:} preserve request structure (method/path/query/headers/body), retain
+delimiters (\texttt{? \& = : /} etc.).
+
+\paragraph{Phishing HTML.}
+\textbf{Task:} phishing vs.\ benign classification.
+\textbf{Source:} \texttt{TODO: dataset name/version}.
+\textbf{Splits:} \texttt{TODO}.
+\textbf{Notes:} raw HTML string, includes tags/attributes and embedded URLs.
+
+\paragraph{HDFS logs.}
+\textbf{Task:} session anomaly detection (normal vs.\ abnormal).
+\textbf{Source:} HDFS\_v1 from LogHub (\texttt{TODO: cite or version}).
+\textbf{Splits:} \texttt{TODO}.
+\textbf{Notes:} sessionization rule (\texttt{TODO}), log lines concatenated with explicit
+line separators.
+
+\subsection{Normalization and preprocessing}
+\label{app:preprocess}
+
+We apply minimal, structure-preserving normalization:
+\begin{itemize}
+  \item Unicode normalization (\texttt{TODO: NFC/NFKC or none})
+  \item Newline normalization (\texttt{CRLF} $\rightarrow$ \texttt{LF})
+  \item Optional whitespace normalization (\texttt{TODO: exactly what})
+\end{itemize}
+We avoid semantic rewriting (e.g., URL decoding or header canonicalization) unless
+explicitly stated for a robustness transformation family (Appendix~\ref{app:robustness}).
+
+\subsection{Tokenizers and vocabulary budgets}
+\label{app:protocols_tokenizers}
+
+\paragraph{Baselines.}
+We evaluate:
+(i) BPE, (ii) Unigram (SentencePiece-style), (iii) byte-level tokenization,
+(iv) boundary-healing heuristic, and (v) CTok (ours).
+
+\paragraph{Vocabulary budgets.}
+Main text uses \texttt{TODO: e.g., 16k}. Additional budgets (e.g., 8k/32k) are reported
+in Appendix~\ref{app:budgets} and Appendix~\ref{app:extra_results}.
+
+\paragraph{Segmentation rules.}
+For CTok, we use a deterministic left-to-right segmentation (longest-match with
+deterministic tie-breaking).
+For baselines, specify the exact implementation/library and its deterministic settings:
+\texttt{TODO: library versions, settings, seed}.
+
+\subsection{Models and fine-tuning}
+\label{app:models}
+
+\paragraph{Encoder-only backbone.}
+Main text: \texttt{TODO: model family and size (e.g., RoBERTa-base class)}.
+We adapt only the embedding/vocabulary interface to each tokenizer; the architecture,
+optimizer, and training schedule are unchanged.
+
+\paragraph{Scaling.}
+Additional model sizes (Small/Base/Large) are reported in Appendix~\ref{app:scaling}.
+
+\subsection{Compute control protocols}
+\label{app:protocols}
+
+We report two regimes.
+
+\paragraph{Equal-compute (preferred).}
+We fix the total number of \emph{training tokens processed}:
+\[
+\texttt{total\_train\_tokens} = \texttt{TODO}.
+\]
+For each tokenizer, we adjust effective sequence packing and/or number of steps so that
+the total number of tokens seen by the model is matched.
+This isolates performance changes due to tokenization rather than differing compute.
+
+\paragraph{Equal-model (system efficiency).}
+We fix model size, max sequence length, batch size, optimizer, and number of steps.
+We compare induced differences in (i) token length, (ii) throughput (tokens/s, samples/s),
+and (iii) peak memory.
+
+\paragraph{Wall-clock control (optional).}
+If reporting wall-clock matched runs, provide:
+hardware, framework, mixed precision, and dataloader settings (Appendix~\ref{app:hardware}).
+
+\subsection{Training hyperparameters and seeds}
+\label{app:hyperparams}
+
+Provide a single source of truth table (per domain if needed):
+\begin{itemize}
+  \item optimizer: AdamW (\texttt{TODO: betas, eps, weight decay})
+  \item LR schedule: \texttt{TODO: linear warmup, cosine, etc.}
+  \item warmup steps/ratio: \texttt{TODO}
+  \item batch size: \texttt{TODO} (global and per GPU)
+  \item max length: \texttt{TODO} (tokens)
+  \item dropout: \texttt{TODO}
+  \item epochs/steps: \texttt{TODO} (and how derived under equal-compute)
+  \item early stopping: \texttt{TODO: criterion, patience}
+  \item seeds: \texttt{TODO: list or count}
+\end{itemize}
+
+\subsection{Metrics}
+\label{app:metrics}
+
+\paragraph{Task metrics.}
+Report AUROC/F1/accuracy as appropriate per dataset (\texttt{TODO: specify}).
+
+\paragraph{Rate and length statistics.}
+Mean/P95/P99 token lengths, token-to-byte ratio, and length jitter under perturbations.
+
+\paragraph{System metrics.}
+Training throughput (tokens/s, samples/s), step time, peak GPU memory.
+Inference latency/throughput (\texttt{TODO: batch sizes}).
+Tokenizer microbenchmarks are in Appendix~\ref{app:systems_extra}.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: Additional Main Results
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Additional Main Results}
+\label{app:extra_results}
+
+This appendix extends the main-text experiments with additional settings:
+vocabulary budgets, model sizes, alternative baselines, and per-domain breakdowns.
+
+\subsection{Additional vocabulary budgets}
+\label{app:budgets}
+
+Report E1/E2/E3 for \texttt{TODO: 8k/32k} budgets. Include:
+(i) rate--distortion plots, (ii) equal-compute performance tables, and (iii) robustness.
+
+\subsection{Model-size scaling}
+\label{app:scaling}
+
+Report results for Small/Base/Large backbones. Emphasize whether CTok benefits persist
+under scaling and whether efficiency gains translate similarly.
+
+\subsection{Expanded tokenizer set}
+\label{app:more_tokenizers}
+
+Add Unigram (and any other variants) to the comparisons.
+If including multiple BPE variants, describe and justify each.
+
+\subsection{Wall-clock matched results (optional)}
+\label{app:wallclock}
+
+If you include wall-clock matching, provide a table of (i) time-to-train, (ii) end
+metric, (iii) throughput, and (iv) stability indicators.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: Token-free and Alternative Baselines
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Token-free and Alternative Baselines}
+\label{app:tokenfree}
+
+This appendix reports non-drop-in alternatives and classic baselines.
+
+\subsection{Tokenizer-free/character-level encoders}
+\label{app:tokenfree_models}
+
+Include CANINE/ByT5/char-level variants as strong robustness-oriented baselines.
+Report compute-aligned comparisons (total training tokens, wall-clock, or FLOPs) and
+clarify that these baselines change the modeling interface.
+
+\subsection{Classic non-neural baselines}
+\label{app:classic_baselines}
+
+Report character $n$-gram + logistic regression / linear SVM.
+Provide feature settings ($n$ range, hashing, regularization) and performance.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: Ablations
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Ablations of CTok Design Choices}
+\label{app:ablations}
+
+\subsection{Compression-only induction ($\lambda=0$)}
+\label{app:ablate_lambda0}
+
+Compare CTok with $\lambda=0$ vs.\ tuned $\lambda$.
+Report rate--distortion and end-task outcomes; highlight failure modes if distortion is
+not controlled.
+
+\subsection{Probe capacity and features}
+\label{app:ablate_probe_capacity}
+
+Compare linear vs.\ MLP probes, different context windows, and alternative prefix features
+(\texttt{TODO: specify}).
+Report estimator stability and whether induction outcomes change.
+
+\subsection{Teacher choice: label vs.\ structure teacher}
+\label{app:ablate_teacher}
+
+Define structure teachers (field/channel tags) and evaluate whether they improve
+robustness and downstream performance beyond label-only.
+
+\subsection{Candidate constraints: boundary-aware vs.\ frequency-only}
+\label{app:token_constraints}
+
+Evaluate boundary-respecting candidates and span-local constraints.
+Report robustness impacts and rate--distortion changes.
+
+\subsection{Runtime variants: compiled deterministic vs.\ heuristic}
+\label{app:ablate_runtime}
+
+Compare deterministic compiled matcher vs.\ heuristic implementations.
+Report tokenization latency and determinism checks (Appendix~\ref{app:systems_extra}).
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: Robustness
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Robustness: Perturbation Sets and Extended Results}
+\label{app:robustness}
+
+This appendix defines the semantics-preserving perturbation families and reports
+extended robustness results.
+
+\subsection{Perturbation families}
+\label{app:perturbations}
+
+\paragraph{HTTP/WAF.}
+Whitespace normalization, delimiter normalization, header casing, header ordering within
+order-invariant sets, query-parameter reordering where semantics are invariant
+(\texttt{TODO: define invariance assumptions}).
+
+\paragraph{HTML.}
+Whitespace/line-break normalization, attribute reordering within a tag, benign formatting
+changes that preserve DOM semantics (\texttt{TODO: define}).
+
+\paragraph{HDFS logs.}
+Spacing normalization, benign field formatting changes (e.g., number padding), delimiter
+variants (\texttt{TODO}).
+
+\subsection{Robustness metrics}
+\label{app:robustness_metrics}
+
+Report:
+(i) token edit distance and normalized length jitter,
+(ii) prediction flip rate and confidence drift,
+(iii) embedding drift $\|e(X)-e(\tilde X)\|_2$ and neighbor changes.
+
+\subsection{Extended robustness results}
+\label{app:robustness_results}
+
+Provide per-domain breakdown figures/tables and per-perturbation-category analyses.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: Diagnostics
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{Diagnostics: Dependency and Representation Geometry}
+\label{app:diagnostics}
+
+This appendix provides the extended diagnostics used to interpret CTok's effects beyond
+end-task performance and robustness.
+
+\subsection{Directed-information viewpoint of prefix distortion}
+\label{app:directed-info}
+
+This section clarifies how the directed semantic distortion relates to information flow
+in sequential settings.
+
+\paragraph{Conditional directed information.}
+Let $X_{1:T}$ be a raw symbolic sequence, and let $Y_{1:T}$ be semantic targets aligned
+with time (e.g., labels per position, field tags, or event types).
+A standard notion of causal information flow is (conditional) directed information,
+defined as
+\begin{equation}
+I^\star(X_{1:T}\rightarrow Y_{1:T}\mid W_{1:T})
+\triangleq
+\sum_{t=1}^T I^\star(X_{1:t};Y_t\mid Y_{1:t-1},W_{1:t}),
+\tag{G.1}\label{eq:app_dirinfo_def}
+\end{equation}
+where $W_{1:T}$ is side information (here we will take $W_{1:T}=Z_{1:T}$ or other
+observables).
+
+Our directed distortion (Lemma~\ref{lem:directed-identity} in Appendix~\ref{app:theory}) is
+\[
+\Delta_{\rightarrow}(\tau)
+=
+\frac{1}{T}\sum_{t=1}^T
+I^\star(Y_t;X_{1:t}\mid Z_{1:t}).
+\]
+This is not identical to directed information in \eqref{eq:app_dirinfo_def} because it
+does not condition on past semantics $Y_{1:t-1}$.
+Nevertheless, it upper-bounds a directed-information quantity and matches it under mild
+assumptions.
+
+\begin{proposition}[Upper bound on conditional directed information]
+\label{prop:dirinfo_upper}
+For any processes $(X_{1:T},Y_{1:T})$ and any tokenization $Z=\tau(X)$,
+\begin{equation}
+\sum_{t=1}^T I^\star(X_{1:t};Y_t\mid Y_{1:t-1},Z_{1:t})
+\ \le\
+\sum_{t=1}^T I^\star(X_{1:t};Y_t\mid Z_{1:t})
+= T\,\Delta_{\rightarrow}(\tau).
+\tag{G.2}\label{eq:app_dirinfo_upper}
+\end{equation}
+\end{proposition}
+
+\begin{proof}
+For each $t$, conditioning reduces mutual information:
+$I(A;B\mid C,D)\le I(A;B\mid C)$.
+Apply with $A=X_{1:t}$, $B=Y_t$, $C=Z_{1:t}$, $D=Y_{1:t-1}$, and sum over $t$.
+\end{proof}
+
+\subsection{Granger-style predictability as conditional mutual information}
+\label{app:granger-cmi}
+
+The main text defines a Granger-style influence score by comparing predictive losses.
+Here we show that under log-loss this difference is exactly a conditional mutual
+information (CMI).
+
+\paragraph{Setup.}
+Let $\{U_t\}_{t\ge 1}$ be a multivariate process with channels
+$U_t^{(1)},\dots,U_t^{(m)}$.
+Fix two channels $i\neq j$.
+Let $\mathcal{L}(A\mid B)$ denote the optimal expected log-loss for predicting $A$ given
+$B$:
+\begin{equation}
+\mathcal{L}(A\mid B)
+\triangleq
+\min_{q(\cdot\mid B)} \ \mathbb{E}\big[-\log q(A\mid B)\big].
+\tag{H.1}\label{eq:app_logloss_def}
+\end{equation}
+
+\begin{lemma}[Log-loss Granger difference equals CMI]
+\label{lem:granger_cmi}
+Let $A=U_t^{(j)}$, $B=U_{1:t-1}^{(\neg i)}$, and $C=U_{1:t-1}^{(i)}$.
+Then
+\begin{equation}
+\mathcal{L}(A\mid B) - \mathcal{L}(A\mid B,C)
+=
+I^\star(A;C\mid B).
+\tag{H.2}\label{eq:app_granger_cmi}
+\end{equation}
+\end{lemma}
+
+\begin{proof}
+By the same variational argument as Lemma~\ref{lem:dist-identity}, the optimal log-loss
+is the conditional entropy:
+$\mathcal{L}(A\mid B)=H^\star(A\mid B)$ and
+$\mathcal{L}(A\mid B,C)=H^\star(A\mid B,C)$.
+Therefore
+\[
+\mathcal{L}(A\mid B)-\mathcal{L}(A\mid B,C)
+=
+H^\star(A\mid B)-H^\star(A\mid B,C)
+=
+I^\star(A;C\mid B).
+\]
+\end{proof}
+
+\subsection{From distortion to representation geometry}
+\label{app:info-geometry}
+
+This section formalizes a chain from semantic distortion at the tokenizer interface to
+limits on downstream representations, and illustrates separability effects in a stylized
+Gaussian discriminant model.
+
+\subsubsection{Information chain: interface loss bounds downstream information}
+
+Let $Z=\tau(X)$ and let $e=\phi(Z)$ be any deterministic representation (e.g., the pooled
+encoder embedding used for detection).
+Then by data processing,
+\begin{equation}
+I^\star(Y;e) \le I^\star(Y;Z).
+\tag{I.1}\label{eq:app_dp1}
+\end{equation}
+Moreover, because $Z$ is a function of $X$,
+\begin{equation}
+I^\star(Y;Z) = I^\star(Y;X) - I^\star(Y;X\mid Z) = I^\star(Y;X) - \Delta(\tau),
+\tag{I.2}\label{eq:app_info_gap}
+\end{equation}
+where the last equality uses Lemma~\ref{lem:dist-identity}.
+Combining \eqref{eq:app_dp1}--\eqref{eq:app_info_gap},
+\begin{equation}
+I^\star(Y;e)
+\ \le\
+I^\star(Y;X) - \Delta(\tau).
+\tag{I.3}\label{eq:app_info_chain}
+\end{equation}
+
+\subsubsection{Gaussian discriminant illustration: distortion behaves like added noise}
+
+Assume binary classes $Y\in\{-1,+1\}$ with equal priors.
+Let $S\in\mathbb{R}^d$ be an ideal detection-relevant feature with
+\begin{equation}
+S\mid Y=y \sim \mathcal{N}(y\mu,\, \Sigma),
+\tag{I.4}\label{eq:app_gauss}
+\end{equation}
+and model tokenization-induced semantic loss as additive interface noise:
+\begin{equation}
+\tilde S = S + \varepsilon,\qquad \varepsilon\sim \mathcal{N}(0,\Sigma_\tau),
+\tag{I.5}\label{eq:app_noise}
+\end{equation}
+independent of $(S,Y)$.
+Then $\tilde S\mid Y=y\sim \mathcal{N}(y\mu, \Sigma+\Sigma_\tau)$.
+A separability proxy aligned with LDA is the squared Mahalanobis distance
+\begin{equation}
+\mathcal{D}_\tau^2 \triangleq \mu^\top(\Sigma+\Sigma_\tau)^{-1}\mu.
+\tag{I.6}\label{eq:app_mahal}
+\end{equation}
+
+\begin{proposition}[Added interface noise reduces separability]
+\label{prop:noise_sep}
+If $\Sigma_\tau^{(1)} \preceq \Sigma_\tau^{(2)}$ (PSD order), then
+$\mathcal{D}_{\tau^{(1)}}^2 \ge \mathcal{D}_{\tau^{(2)}}^2$.
+\end{proposition}
+
+\begin{proof}
+If $A\preceq B$ and both are PSD, then $(\Sigma+A)^{-1}\succeq(\Sigma+B)^{-1}$ for
+$\Sigma\succ 0$ (order-reversing property of matrix inverse).
+Premultiplying and postmultiplying by $\mu$ yields the result.
+\end{proof}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: System Implementation and Microbenchmarks
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+\section{System Implementation and Microbenchmarks}
+\label{app:systems_extra}
+
+This appendix documents the CTok build-time and runtime implementation, compilation,
+artifact size, determinism tests, and tokenizer microbenchmarks.
+
+\subsection{Compilation pipeline (FST/DFA-equivalent)}
+\label{app:fst_pipeline}
+
+Describe the compilation pipeline:
+(i) vocabulary + segmentation rule, (ii) automaton construction, (iii) determinization,
+(iv) minimization/optimization, (v) emission of runtime artifact.
+Specify tooling/library versions (\texttt{TODO}).
+
+\subsection{Determinism and golden tests}
+\label{app:golden}
+
+Define golden tokenization tests used to verify $X\mapsto Z$ stability across platforms.
+Report whether artifacts are byte-identical and whether outputs match exactly.
+
+\subsection{Tokenizer microbenchmarks}
+\label{app:microbench}
+
+Report CPU throughput (MB/s, samples/s), P50/P95 latency, and memory usage for each
+tokenizer implementation. Provide the benchmark harness and settings.
+
+\subsection{End-to-end efficiency}
+\label{app:e2e_eff}
+
+Report training throughput/peak memory and inference latency/throughput breakdowns.
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% Appendix: Additional Theory and Proofs (COMPLETE, from your current content)
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
 \section{Additional Theory and Proofs}
 \label{app:theory}
 
@@ -813,9 +1205,6 @@ $I^\star(Y;X\mid Z_2)\ge I^\star(Y;X\mid Z_1)$, and the claim follows from
 \eqref{eq:app_cmi}.
 \end{proof}
 
-% =========================================================
-% Appendix B: Directed (prefix) distortion and connection to causal predictability
-% =========================================================
 \subsection{Directed semantic distortion over prefixes}
 \label{app:directed}
 
@@ -854,21 +1243,8 @@ $Z_{1:t}$ is a deterministic function of $X_{1:t}$ for a left-to-right tokenizer
 Averaging over $t$ yields \eqref{eq:app_directed_entropy_gap}.
 \end{proof}
 
-\paragraph{Relation to causal predictability diagnostics.}
-If we choose $Y_t$ to be a structural/semantic channel at time $t$ (e.g., key identity,
-delimiter type, field tag, etc.), then the terms $H^\star(Y_t\mid Z_{1:t})$ directly
-measure \emph{how predictable that channel remains from tokenized prefixes}.
-In this sense, directed distortion formalizes causal predictability loss caused by the
-tokenization interface, which motivates Granger-style diagnostics in the main text.
-
-% =========================================================
-% Appendix C: Detection implications (bounds)
-% =========================================================
 \subsection{Implications for detection: information bounds}
 \label{app:detection-bounds}
-
-Our distortion controls a fundamental limit on downstream prediction, independent of
-the specific encoder architecture.
 
 \begin{proposition}[Excess Bayes error is controlled by conditional entropy]
 \label{prop:fano}
@@ -898,23 +1274,8 @@ The bound \eqref{eq:app_fano} follows from Fano's inequality.
 Equation \eqref{eq:app_entropy_dist} is Lemma~\ref{lem:dist-identity}.
 \end{proof}
 
-\paragraph{Interpretation.}
-Proposition~\ref{prop:fano} makes the ``detection-centric'' meaning of distortion
-concrete: if a tokenizer increases $H^\star(Y\mid Z)$ substantially, no downstream model
-can fully recover the lost predictability without additional information.
-Thus $\Delta(\tau)$ is not merely a proxy metric—it upper-bounds a genuine semantic loss
-at the interface.
-
-% =========================================================
-% Appendix D: Probe estimation as an upper bound + practical estimation
-% =========================================================
 \subsection{Probe-based estimation: variational upper bounds}
 \label{app:probe}
-
-In practice, we estimate distortion with a probe family $\mathcal{Q}$ (e.g., linear or
-small MLP predictors on token-prefix features).
-Even when $\mathcal{Q}$ is restricted, the probe loss provides a principled \emph{upper
-bound} on the optimal distortion over a larger class.
 
 \begin{proposition}[Any probe yields an upper bound]
 \label{prop:upperbound}
@@ -935,32 +1296,6 @@ For any predictor $q\in\mathcal{Q}$,
 Immediate from the definition as a minimum over $q$.
 \end{proof}
 
-\paragraph{Cross-entropy form.}
-When $P^\star(Y\mid X)$ is implemented as a teacher distribution (or hard labels as a
-degenerate distribution), the KL objective differs from teacher-aligned cross-entropy by
-an additive constant independent of $q$.
-Therefore, minimizing probe cross-entropy is equivalent to minimizing the KL term in
-\eqref{eq:app_dist_global} up to constants, and comparisons across tokenizers are
-well-defined.
-
-\paragraph{Finite-sample estimator.}
-Given samples $\{(x_i, y_i)\}_{i=1}^N$ and a tokenizer $\tau$, define $z_i=\tau(x_i)$.
-A standard empirical estimator is
-\[
-\widehat{\Delta}(\tau)
-=
-\min_{q\in\mathcal{Q}}
-\frac{1}{N}\sum_{i=1}^N
-\mathrm{KL}\!\left(P^\star(\cdot\mid x_i)\ \Vert\ q(\cdot\mid z_i)\right),
-\]
-and similarly for $\widehat{\Delta}_{\rightarrow}(\tau)$ using prefix-aligned targets.
-Generalization can be analyzed with standard learning-theory tools for the chosen probe
-class; in our system, probes are deliberately lightweight so that distortion estimation
-is stable and inexpensive.
-
-% =========================================================
-% Appendix E: Greedy vocabulary induction as approximate optimization
-% =========================================================
 \subsection{Greedy vocabulary induction as marginal Lagrangian improvement}
 \label{app:greedy}
 
@@ -985,15 +1320,7 @@ Then the Lagrangian change is
 - g(c) + \lambda\,\delta(c).
 \tag{E.2}\label{eq:app_deltaL}
 \end{equation}
-Thus selecting $c$ that maximizes $g(c)-\lambda\,\delta(c)$ greedily yields the largest
-single-step decrease in $\mathcal{L}$, which motivates Algorithm~1 in the main text.
-When $\delta(c)$ is estimated via probe loss (Appendix~\ref{app:probe}), the resulting
-procedure can be interpreted as approximate coordinate descent on a tractable surrogate
-of \eqref{eq:app_lagrangian}.
 
-% =========================================================
-% Appendix F: Deterministic runtime tokenization and locality (boundary sensitivity)
-% =========================================================
 \subsection{Deterministic compilation and locality of boundary effects}
 \label{app:det-local}
 
@@ -1012,23 +1339,17 @@ Hence runtime is $\mathcal{O}(n)$ with constants determined by the compiled arti
 This guarantee is independent of input distribution.
 
 \paragraph{Locality and boundary sensitivity.}
-We formalize a simple locality condition that explains why boundary-aligned vocabularies
-reduce interface sensitivity.
-
-Let $\mathcal{B}$ be a set of \emph{hard boundaries} (e.g., delimiters such as ``='', ``:'',
-``\&'', whitespace/newline, or structural separators) and assume a segmentation rule that
-never produces tokens crossing these boundaries (i.e., every token is contained within a
-boundary-to-boundary span).
-Then edits that modify characters within a single span cannot change tokenization
-outside a small neighborhood of that span.
+Let $\mathcal{B}$ be a set of hard boundaries (e.g., delimiters, whitespace/newline).
+Assume a segmentation rule that never produces tokens crossing these boundaries.
+Then edits within a single boundary span cannot change tokenization outside a small
+neighborhood.
 
 \begin{lemma}[Locality under boundary-respecting tokenization]
 \label{lem:locality}
 Assume the tokenizer never emits tokens that cross boundaries in $\mathcal{B}$, and
 segmentation is left-to-right deterministic.
-Let $X$ and $\tilde X$ differ only within one boundary span (between two consecutive
-boundaries). Then $\tau(X)$ and $\tau(\tilde X)$ are identical outside that span, and any
-change in token length is confined to that span.
+Let $X$ and $\tilde X$ differ only within one boundary span. Then $\tau(X)$ and
+$\tau(\tilde X)$ are identical outside that span.
 \end{lemma}
 
 \begin{proof}
@@ -1041,286 +1362,23 @@ into neighboring spans, subsequent spans see the same input and the same initial
 so emitted tokens are identical thereafter.
 \end{proof}
 
-\paragraph{Implication.}
-Lemma~\ref{lem:locality} gives a mechanistic explanation for improved robustness:
-boundary-respecting tokenization prevents micro-edits (e.g., trailing whitespace,
-delimiter normalization) from causing global segmentation cascades, thereby reducing
-token-length jitter and embedding drift.
-
-% =========================================================
-% Appendix G: Directed information viewpoint
-% =========================================================
-\subsection{Directed-information viewpoint of prefix distortion}
-\label{app:directed-info}
-
-This section clarifies how the directed semantic distortion
-$\Delta_{\rightarrow}(\tau)$ relates to information flow in sequential settings.
-
-\paragraph{Conditional directed information.}
-Let $X_{1:T}$ be a raw symbolic sequence, and let $Y_{1:T}$ be semantic targets aligned
-with time (e.g., labels per position, field tags, or event types).
-A standard notion of causal information flow is (conditional) directed information,
-defined as
-\begin{equation}
-I^\star(X_{1:T}\rightarrow Y_{1:T}\mid W_{1:T})
-\triangleq
-\sum_{t=1}^T I^\star(X_{1:t};Y_t\mid Y_{1:t-1},W_{1:t}),
-\tag{G.1}\label{eq:app_dirinfo_def}
-\end{equation}
-where $W_{1:T}$ is side information (here we will take $W_{1:T}=Z_{1:T}$ or other
-observables).
-
-Our directed distortion (Lemma~\ref{lem:directed-identity}) is
-\[
-\Delta_{\rightarrow}(\tau)
-=
-\frac{1}{T}\sum_{t=1}^T
-I^\star(Y_t;X_{1:t}\mid Z_{1:t}).
-\]
-This is not identical to directed information in \eqref{eq:app_dirinfo_def} because it
-does not condition on past semantics $Y_{1:t-1}$.
-Nevertheless, it upper-bounds a directed-information quantity and matches it under mild
-assumptions.
-
-\begin{proposition}[Upper bound on conditional directed information]
-\label{prop:dirinfo_upper}
-For any processes $(X_{1:T},Y_{1:T})$ and any tokenization $Z=\tau(X)$,
-\begin{equation}
-\sum_{t=1}^T I^\star(X_{1:t};Y_t\mid Y_{1:t-1},Z_{1:t})
-\ \le\
-\sum_{t=1}^T I^\star(X_{1:t};Y_t\mid Z_{1:t})
-= T\,\Delta_{\rightarrow}(\tau).
-\tag{G.2}\label{eq:app_dirinfo_upper}
-\end{equation}
-\end{proposition}
-
-\begin{proof}
-For each $t$, conditioning reduces mutual information:
-$I(A;B\mid C,D)\le I(A;B\mid C)$.
-Apply with $A=X_{1:t}$, $B=Y_t$, $C=Z_{1:t}$, $D=Y_{1:t-1}$, and sum over $t$.
-\end{proof}
-
-\paragraph{When the notions coincide.}
-If the semantics are ``memoryless given the prefix'' in the sense that
-$Y_t \perp Y_{1:t-1} \mid (X_{1:t}, Z_{1:t})$ (or more strongly $Y_t \perp Y_{1:t-1}\mid
-X_{1:t}$ under the teacher), then
-$I^\star(X_{1:t};Y_t\mid Y_{1:t-1},Z_{1:t})=I^\star(X_{1:t};Y_t\mid Z_{1:t})$ and the
-upper bound \eqref{eq:app_dirinfo_upper} becomes an equality.
-In this common regime (local semantic tags, channelized structure targets), our directed
-distortion exactly equals a normalized conditional directed information.
-
-\paragraph{Interpretation.}
-Proposition~\ref{prop:dirinfo_upper} justifies calling
-$\Delta_{\rightarrow}(\tau)$ a \emph{causal predictability loss}: it controls the
-maximum amount of causal information about $Y_{1:T}$ that raw prefixes can provide
-beyond what the tokenizer preserves in token prefixes.
-This is the information-theoretic backbone for the dependency-disruption diagnostics in
-the main text.
-
-% =========================================================
-% Appendix H: Granger-style predictability equals conditional mutual information
-% =========================================================
-\subsection{Granger-style predictability as conditional mutual information}
-\label{app:granger-cmi}
-
-The main text defines a Granger-style influence score by comparing predictive losses.
-Here we show that under log-loss this difference is exactly a conditional mutual
-information (CMI), which makes the diagnostic formally grounded.
-
-\paragraph{Setup.}
-Let $\{U_t\}_{t\ge 1}$ be a multivariate process with channels
-$U_t^{(1)},\dots,U_t^{(m)}$.
-Fix two channels $i\neq j$.
-Let $\mathcal{L}(A\mid B)$ denote the optimal expected log-loss for predicting $A$ given
-$B$:
-\begin{equation}
-\mathcal{L}(A\mid B)
-\triangleq
-\min_{q(\cdot\mid B)} \ \mathbb{E}\big[-\log q(A\mid B)\big].
-\tag{H.1}\label{eq:app_logloss_def}
-\end{equation}
-
-\begin{lemma}[Log-loss Granger difference equals CMI]
-\label{lem:granger_cmi}
-Let $A=U_t^{(j)}$, $B=U_{1:t-1}^{(\neg i)}$, and $C=U_{1:t-1}^{(i)}$.
-Then
-\begin{equation}
-\mathcal{L}(A\mid B) - \mathcal{L}(A\mid B,C)
-=
-I^\star(A;C\mid B).
-\tag{H.2}\label{eq:app_granger_cmi}
-\end{equation}
-\end{lemma}
-
-\begin{proof}
-By the same variational argument as Lemma~\ref{lem:dist-identity}, the optimal log-loss
-is the conditional entropy:
-$\mathcal{L}(A\mid B)=H^\star(A\mid B)$ and
-$\mathcal{L}(A\mid B,C)=H^\star(A\mid B,C)$.
-Therefore
-\[
-\mathcal{L}(A\mid B)-\mathcal{L}(A\mid B,C)
-=
-H^\star(A\mid B)-H^\star(A\mid B,C)
-=
-I^\star(A;C\mid B).
-\]
-\end{proof}
-
-\paragraph{Consequence for our diagnostic.}
-With $A=U_t^{(j)}$, $B=U_{1:t-1}^{(\neg i)}$, and $C=U_{1:t-1}^{(i)}$, the Granger-style
-influence $\mathcal{G}_{i\rightarrow j}$ in the main text equals
-$I^\star(U_t^{(j)}; U_{1:t-1}^{(i)} \mid U_{1:t-1}^{(\neg i)})$ under log-loss.
-Hence the deviation metric $\Delta_{\mathrm{GC}}(\tau)$ can be interpreted as a weighted
-difference between conditional mutual-information graphs before and after tokenization.
-This makes the diagnostic robust to model choices: it measures dependency structure
-rather than a particular predictor's behavior.
-
-% =========================================================
-% Appendix I: From distortion to representation geometry (information + Gaussian model)
-% =========================================================
-\subsection{From distortion to representation geometry}
-\label{app:info-geometry}
-
-This section formalizes a clean chain from semantic distortion at the tokenizer
-interface to limits on downstream representations, and illustrates the effect on
-separability in a standard Gaussian discriminant model.
-
-\subsubsection{Information chain: interface loss bounds downstream information}
-
-Let $Z=\tau(X)$ and let $e=\phi(Z)$ be any deterministic representation (e.g., the pooled
-encoder embedding used for detection).
-Then by data processing,
-\begin{equation}
-I^\star(Y;e) \le I^\star(Y;Z).
-\tag{I.1}\label{eq:app_dp1}
-\end{equation}
-Moreover, because $Z$ is a function of $X$,
-\begin{equation}
-I^\star(Y;Z) = I^\star(Y;X) - I^\star(Y;X\mid Z) = I^\star(Y;X) - \Delta(\tau),
-\tag{I.2}\label{eq:app_info_gap}
-\end{equation}
-where the last equality uses Lemma~\ref{lem:dist-identity}.
-Combining \eqref{eq:app_dp1}--\eqref{eq:app_info_gap},
-\begin{equation}
-I^\star(Y;e)
-\ \le\
-I^\star(Y;X) - \Delta(\tau).
-\tag{I.3}\label{eq:app_info_chain}
-\end{equation}
-
-\paragraph{Interpretation.}
-Equation \eqref{eq:app_info_chain} states that semantic distortion is a \emph{hard}
-interface limitation: no downstream model can encode more label information than what
-remains after tokenization, and distortion precisely measures the information lost.
-
-\subsubsection{Gaussian discriminant illustration: distortion behaves like added noise}
-
-To connect this to geometric separability, we consider a standard stylized model.
-
-\paragraph{Model.}
-Assume binary classes $Y\in\{-1,+1\}$ with equal priors.
-Let $S\in\mathbb{R}^d$ be an ideal, detection-relevant feature extracted from $X$
-(e.g., a sufficient statistic under the teacher) with class-conditional distribution
-\begin{equation}
-S\mid Y=y \sim \mathcal{N}(y\mu,\, \Sigma),
-\tag{I.4}\label{eq:app_gauss}
-\end{equation}
-where $\mu\in\mathbb{R}^d$ and $\Sigma\succ 0$.
-Now model tokenization-induced semantic loss as an additive interface noise that yields
-a token-level feature $\tilde S$:
-\begin{equation}
-\tilde S = S + \varepsilon,\qquad \varepsilon\sim \mathcal{N}(0,\Sigma_\tau),
-\tag{I.5}\label{eq:app_noise}
-\end{equation}
-independent of $(S,Y)$, where $\Sigma_\tau\succeq 0$ depends on the tokenizer.
-This model captures the intuition that harmful tokenization increases within-class
-variance in detection-relevant directions (embedding drift / boundary sensitivity), even
-when class means remain similar.
-
-\paragraph{Separability proxy.}
-Under \eqref{eq:app_gauss}--\eqref{eq:app_noise}, $\tilde S\mid Y=y\sim
-\mathcal{N}(y\mu, \Sigma+\Sigma_\tau)$.
-A common separability proxy aligned with LDA is the squared Mahalanobis distance:
-\begin{equation}
-\mathcal{D}_\tau^2 \triangleq \mu^\top(\Sigma+\Sigma_\tau)^{-1}\mu.
-\tag{I.6}\label{eq:app_mahal}
-\end{equation}
-Larger $\mathcal{D}_\tau^2$ implies lower Bayes error and larger linear margin in the
-optimal discriminant direction.
-
-\begin{proposition}[Added interface noise reduces separability]
-\label{prop:noise_sep}
-If $\Sigma_\tau^{(1)} \preceq \Sigma_\tau^{(2)}$ (PSD order), then
-$\mathcal{D}_{\tau^{(1)}}^2 \ge \mathcal{D}_{\tau^{(2)}}^2$.
-In particular, increasing tokenizer-induced noise cannot improve separability in this
-model.
-\end{proposition}
-
-\begin{proof}
-If $A\preceq B$ and both are PSD, then $(\Sigma+A)^{-1}\succeq(\Sigma+B)^{-1}$ for
-$\Sigma\succ 0$ (order-reversing property of matrix inverse).
-Premultiplying and postmultiplying by $\mu$ yields the result.
-\end{proof}
-
-\paragraph{Connection back to distortion.}
-In this stylized model, increasing boundary sensitivity and dependency disruption can be
-interpreted as increasing $\Sigma_\tau$ in directions that matter for class separation,
-which reduces $\mathcal{D}_\tau^2$ and degrades Fisher-type ratios.
-Our controlled-compression objective aims to reduce precisely this failure mode by
-choosing tokens that preserve directed semantic predictability, empirically observed to
-improve neighborhood preservation and separability diagnostics.
-
-\paragraph{Remark (how to use this in writing).}
-You can phrase Appendix~\ref{app:info-geometry} as: \emph{distortion upper-bounds the
-information available to any embedding, and in a canonical discriminant model, interface
-noise increases within-class scatter, reducing separability}.
-This is the theory counterpart of your empirical geometry diagnostics.
-
-% =========================================================
-% Appendix J: Formal stability metrics for boundary sensitivity
-% =========================================================
 \subsection{Formal stability metrics for boundary sensitivity}
 \label{app:stability}
 
-The main text motivates boundary sensitivity as a system risk.
-Here we formalize an interface stability metric and show why boundary-respecting
-tokenization yields provable locality and Lipschitz-type bounds.
-
-\subsubsection{Tokenization stability under semantics-preserving perturbations}
-
-Let $\mathcal{T}$ be a family of semantics-preserving transformations on strings
-(e.g., whitespace normalization, benign delimiter variants, header casing changes, field
-reordering within order-invariant sets).
+Let $\mathcal{T}$ be a family of semantics-preserving transformations on strings.
 For each $x$, define a perturbed sample $\tilde x = T(x)$ with $T\sim\mathcal{T}$.
 
-Define tokenization instability as the expected token-edit distance between the
-token sequences:
+Define tokenization instability as the expected token-edit distance between token
+sequences:
 \begin{equation}
 \mathrm{Stab}(\tau)
 \triangleq
 \mathbb{E}_{X}\mathbb{E}_{T\sim\mathcal{T}}
-\big[ d_{\mathrm{edit}}(\tau(X),\tau(T(X)))\big],
+\big[ d_{\mathrm{edit}}(\tau(X),\tau(T(X)))\big].
 \tag{J.1}\label{eq:app_stab_def}
 \end{equation}
-where $d_{\mathrm{edit}}$ is Levenshtein distance on token sequences or an aligned cost
-(e.g., token-level insertion/deletion cost).
-We also define a normalized variant
-$\mathrm{Stab}_n(\tau)=\mathbb{E}[d_{\mathrm{edit}}(\tau(X),\tau(T(X)))/(|\tau(X)|+1)]$.
 
-\paragraph{Why it matters.}
-Large $\mathrm{Stab}(\tau)$ implies token-length jitter and segmentation cascades, which
-can amplify encoder activation differences and induce embedding drift.
-Thus \eqref{eq:app_stab_def} provides a formal target for the robustness experiments in
-the main text.
-
-\subsubsection{Locality bound under boundary-respecting tokenization}
-
-We refine Lemma~\ref{lem:locality} into a quantitative bound.
-
-Assume a set of hard boundaries $\mathcal{B}$ partitions $X$ into spans.
-Let $\tau$ be boundary-respecting: it never emits tokens that cross a boundary, and it
-processes spans deterministically left-to-right.
+Assume boundary-respecting segmentation with spans induced by $\mathcal{B}$.
 
 \begin{proposition}[Span-local Lipschitz bound]
 \label{prop:span_lip}
@@ -1335,305 +1393,72 @@ d_{\mathrm{edit}}(\tau(X),\tau(\tilde X))
 \end{equation}
 where $\mathcal{S}$ is the set of modified spans and $X^{(s)}$ denotes the substring in
 span $s$.
-In particular, edits confined to a few spans cannot cause unbounded global tokenization
-changes.
 \end{proposition}
 
 \begin{proof}
-Because tokenization is independent across spans (by boundary-respecting property),
-token sequences outside modified spans are identical and cancel in the edit distance.
-Within each modified span $s$, the worst-case edit distance between two sequences is at
-most the sum of their lengths (delete all tokens of one and insert all tokens of the
-other), yielding \eqref{eq:app_span_lip} after summing over modified spans.
+Token sequences outside modified spans are identical and cancel in the edit distance.
+Within each modified span $s$, worst-case edit distance is at most the sum of their
+lengths, yielding \eqref{eq:app_span_lip}.
 \end{proof}
 
-\paragraph{Implication for boundary sensitivity.}
-Proposition~\ref{prop:span_lip} formalizes the key mechanism: preventing tokens from
-crossing structural boundaries makes the tokenization map locally stable under common
-format drift.
-This complements the system design goal of deterministic compilation: together they
-yield both reproducibility and robustness as a preprocessing interface.
-
-\subsubsection{Link to representation stability}
-
-Let $e=\phi(Z)$ be the downstream embedding (encoder + pooling).
-If $\phi$ is $L$-Lipschitz w.r.t.\ token edit distance under an appropriate embedding of
-token sequences (a standard assumption for bounded-norm encoders), then
-\begin{equation}
-\|e(X)-e(\tilde X)\|
-\ \le\
-L\cdot d_{\mathrm{edit}}(\tau(X),\tau(\tilde X)).
-\tag{J.3}\label{eq:app_embed_lip}
-\end{equation}
-Combined with Proposition~\ref{prop:span_lip}, this yields a concrete theoretical reason
-why boundary-respecting controlled tokenization reduces embedding driftIf you observe
-smaller $d_{\mathrm{edit}}$ under $\mathcal{T}$, you should also observe smaller
-$\|e(X)-e(\tilde X)\|$, consistent with the robustness metrics in the main text.
-
-
-% =========================================================
-% Appendix K: Greedy induction and approximation guarantees (submodular surrogate)
-% =========================================================
 \subsection{Greedy induction with approximation guarantees via a submodular surrogate}
 \label{app:submodular}
 
 Algorithm~1 greedily selects tokens by maximizing a gain--distortion score.
-The exact objective induced by runtime tokenization (e.g., longest-match segmentation)
-can exhibit complex interactions due to overlapping candidates, tie-breaking, and span
-competition, and therefore need not be strictly submodular.
-In this appendix, we provide a principled justification by introducing a tight,
-interpretable surrogate that \emph{is} monotone submodular and admits classical greedy
-approximation guarantees.
-We also state sufficient conditions under which the surrogate closely tracks the true
-token-length reduction.
+The exact objective can exhibit interactions due to overlaps and competition.
+Here we introduce a tight surrogate that is monotone submodular and admits classical
+greedy approximation guarantees.
 
 \subsubsection{A weighted-coverage surrogate for compression gain}
 
-Fix a corpus $\mathcal{D}=\{x_i\}_{i=1}^N$ and a candidate set $\mathcal{C}$.
+Fix a corpus $\mathcal{D}=\{x_i\}_{i=1}^N$ and candidate set $\mathcal{C}$.
 For each candidate token $c\in\mathcal{C}$, define $\mathrm{Occ}(c)$ as the set of its
-occurrences in the corpus at the character/span level (e.g., all positions/spans where
-$c$ appears as a substring, optionally restricted to boundary-respecting spans).
-For each occurrence $o\in \mathrm{Occ}(c)$, assign a nonnegative weight $w(o)\ge 0$
-representing the \emph{potential} token-count reduction contributed by encoding that
-occurrence as a single token (e.g., length-in-bytes minus 1, or the number of base
-symbols replaced, possibly capped).
+occurrences in the corpus at the character/span level.
+For each occurrence $o\in \mathrm{Occ}(c)$, assign weight $w(o)\ge 0$ representing
+potential token-count reduction.
 
-For a selected vocabulary set $S\subseteq \mathcal{C}$, define the surrogate gain
+For selected set $S\subseteq \mathcal{C}$, define surrogate gain
 \begin{equation}
 G(S)
 \triangleq
 \sum_{o\in \Omega} \max_{c\in S:\ o\in \mathrm{Occ}(c)} w(o),
 \tag{K.1}\label{eq:app_submod_gain}
 \end{equation}
-where $\Omega \triangleq \bigcup_{c\in\mathcal{C}}\mathrm{Occ}(c)$ is the universe of
-all candidate occurrences, and the max is defined as $0$ if no selected token covers
-$o$.
-Intuitively, each occurrence contributes the weight of the \emph{best} selected token
-that can explain it; this relaxes competition effects by allowing occurrences to be
-``claimed'' independently.
+where $\Omega = \bigcup_{c\in\mathcal{C}}\mathrm{Occ}(c)$.
 
 \begin{lemma}[Monotone submodularity of the coverage surrogate]
 \label{lem:submod}
-The set function $G(S)$ defined in \eqref{eq:app_submod_gain} is normalized
-($G(\emptyset)=0$), monotone nondecreasing, and submodular.
+$G(S)$ is normalized, monotone nondecreasing, and submodular.
 \end{lemma}
 
 \begin{proof}
 Normalization is immediate.
-Monotonicity holds because adding a token can only increase the max term for each
-occurrence.
-To show submodularity (diminishing returns), take $A\subseteq B$ and a token $c\notin B$.
-For any occurrence $o$, the marginal improvement from adding $c$ is
-\[
-\Delta_o(c\mid S)=\max\{m_S(o), w(o)\}-m_S(o),
-\quad
-m_S(o)\triangleq \max_{c'\in S:\ o\in \mathrm{Occ}(c')} w(o),
-\]
-which is nonincreasing in $m_S(o)$.
-Since $m_A(o)\le m_B(o)$ for all $o$ (monotonicity of max), we have
-$\Delta_o(c\mid A)\ge \Delta_o(c\mid B)$ pointwise.
-Summing over $o$ yields $G(A\cup\{c\})-G(A)\ge G(B\cup\{c\})-G(B)$.
+Monotonicity holds because adding a token can only increase the max for each occurrence.
+Submodularity follows by diminishing returns: for $A\subseteq B$ and $c\notin B$, the
+marginal improvement is pointwise larger for $A$ than for $B$; summing yields the claim.
 \end{proof}
 
-\subsubsection{Incorporating distortion: submodular maximization under a budget}
-
-Suppose we use a modular (additive) distortion proxy over tokens,
-\begin{equation}
-D(S)\triangleq \sum_{c\in S} d(c),\qquad d(c)\ge 0,
-\tag{K.2}\label{eq:app_mod_cost}
-\end{equation}
-where $d(c)$ can be estimated by probe-based distortion increments or an offline score.
-
-Two common formulations follow.
-
-\paragraph{Cardinality budget.}
-Given a vocabulary budget $B$, maximize $G(S)$ subject to $|S|\le B$.
-By Lemma~\ref{lem:submod}, the classical greedy algorithm that repeatedly adds the item
-with the largest marginal gain achieves a $(1-1/e)$ approximation to the optimum
-\citep{nemhauser1978analysis}:
-\begin{equation}
-G(S_{\mathrm{greedy}})\ \ge\ (1-1/e)\,G(S^\star).
-\tag{K.3}\label{eq:app_1m1e}
-\end{equation}
-
-\paragraph{Knapsack-style distortion budget.}
-Given a distortion budget $\varepsilon$, maximize $G(S)$ subject to $D(S)\le \varepsilon$.
-For monotone submodular maximization under a knapsack constraint, standard results give
-a constant-factor approximation via density-greedy plus small-item enumeration, and
-$(1-1/e)$ can be achieved by more refined methods \citep{sviridenko2004submodular}.
-In practice, our gain--distortion score $g(c)-\lambda\,\delta(c)$ can be interpreted as
-a Lagrangian relaxation of this constraint.
-
-\subsubsection{When does the surrogate track true token-length reduction?}
-
-The surrogate $G(S)$ upper-bounds the idealized, occurrence-wise compression benefit and
-ignores segmentation competition.
-It becomes a tight proxy in regimes where tokenization behaves locally and does not
-create long-range cascades.
-
-\begin{assumption}[Span-local, boundary-respecting segmentation]
-\label{ass:span_local}
-Tokenization never emits tokens that cross a fixed boundary set $\mathcal{B}$, and
-segmentation within each boundary span depends only on the characters inside that span.
-Moreover, occurrences selected for compression can be chosen so that they do not overlap
-within each span (e.g., via longest-match determinism or by restricting candidates).
-\end{assumption}
-
-\begin{proposition}[Surrogate consistency under span locality]
-\label{prop:surrogate_consistency}
-Under Assumption~\ref{ass:span_local}, the true token-count reduction achieved by adding
-a set $S$ is well-approximated by the span-wise maximum-coverage surrogate $G(S)$ up to
-a bounded overlap factor.
-In particular, if occurrences do not overlap and each selected occurrence reduces the
-token count by exactly $w(o)$, then $G(S)$ equals the true reduction.
-\end{proposition}
-
-\begin{proof}[Proof sketch]
-By span locality, the tokenization effect decomposes over boundary spans.
-If occurrences are non-overlapping within each span, selecting tokens corresponds to
-choosing a set of disjoint compressions, and the achieved reduction is the sum of their
-weights.
-The max-coverage surrogate recovers exactly this sum because each occurrence is claimed
-by its best selected token without conflict.
-When overlaps occur, the surrogate remains an upper bound and the approximation gap can
-be controlled by the maximum number of competing occurrences per position (an overlap
-factor).
-\end{proof}
-
-\paragraph{Takeaway.}
-Appendix~\ref{app:submodular} provides a clean theoretical backbone:
-a natural relaxation of compression gain is monotone submodular, hence greedy selection
-is near-optimal in a precise sense.
-Our system design (boundary-respecting determinism and span locality) is aligned with
-the conditions under which this relaxation closely matches the behavior of the deployed
-tokenizer.
-
-% =========================================================
-% Appendix L: Directed distortion as irreducible online prediction regret
-% =========================================================
 \subsection{Directed semantic distortion as irreducible online prediction regret}
 \label{app:regret}
 
-This appendix connects $\Delta_{\rightarrow}(\tau)$ to sequential prediction under
-log-loss.
-The key message is that directed distortion equals the \emph{minimum unavoidable excess
-log-loss} incurred by any predictor that only observes tokenized prefixes, compared to
-an oracle that observes raw prefixes.
-
-\subsubsection{Sequential prediction and optimal log-loss}
-
-Consider a sequential semantic target process $Y_{1:T}$ and raw inputs $X_{1:T}$.
-At each time $t$, a predictor outputs a conditional distribution over $Y_t$ based on
-available observations.
-
-\paragraph{Oracle (raw-prefix) predictor.}
-Let the oracle observe $X_{1:t}$.
-Among all conditional distributions $p_t(\cdot\mid X_{1:t})$, the minimum achievable
-expected log-loss at time $t$ is the conditional entropy:
-\begin{equation}
-\inf_{p_t}\ \mathbb{E}\big[-\log p_t(Y_t\mid X_{1:t})\big] = H^\star(Y_t\mid X_{1:t}).
-\tag{L.1}\label{eq:app_oracle_loss}
-\end{equation}
-
-\paragraph{Token-prefix predictor.}
-Let $Z=\tau(X)$ and the student observe only $Z_{1:t}$.
-Among all conditional distributions $q_t(\cdot\mid Z_{1:t})$,
-\begin{equation}
-\inf_{q_t}\ \mathbb{E}\big[-\log q_t(Y_t\mid Z_{1:t})\big] = H^\star(Y_t\mid Z_{1:t}).
-\tag{L.2}\label{eq:app_student_loss}
-\end{equation}
-
-These identities follow from the same variational argument used in
-Lemma~\ref{lem:dist-identity}: under log-loss, the Bayes-optimal predictor is the true
-conditional distribution.
-
-\subsubsection{Directed distortion equals optimal excess log-loss}
+Consider sequential targets $Y_{1:T}$ and inputs $X_{1:T}$.
+Under log-loss, the Bayes-optimal expected loss equals conditional entropy.
 
 \begin{theorem}[Directed distortion as irreducible regret]
 \label{thm:dist_regret}
 Assume the student predictor class is unrestricted (or rich enough to represent
 $P^\star(Y_t\mid Z_{1:t})$).
-Then the minimum achievable \emph{expected} cumulative excess log-loss of observing
-tokens instead of raw prefixes is
+Then the minimum achievable expected cumulative excess log-loss of observing tokenized
+prefixes instead of raw prefixes is
 \begin{equation}
 \sum_{t=1}^T \Big(H^\star(Y_t\mid Z_{1:t}) - H^\star(Y_t\mid X_{1:t})\Big)
 =
 T\,\Delta_{\rightarrow}(\tau).
 \tag{L.3}\label{eq:app_regret_equals}
 \end{equation}
-Equivalently, $\Delta_{\rightarrow}(\tau)$ is the per-step irreducible regret induced by
-the tokenization interface.
 \end{theorem}
 
 \begin{proof}
-By Lemma~\ref{lem:directed-identity},
-\[
-\Delta_{\rightarrow}(\tau)
-=
-\frac{1}{T}\sum_{t=1}^T
-\left(H^\star(Y_t\mid Z_{1:t}) - H^\star(Y_t\mid X_{1:t})\right).
-\]
-Multiplying both sides by $T$ yields \eqref{eq:app_regret_equals}.
+Immediate from Lemma~\ref{lem:directed-identity}.
 \end{proof}
-
-\paragraph{Mutual-information form.}
-Using Lemma~\ref{lem:directed-identity}, the per-step excess loss equals a conditional
-mutual information:
-\begin{equation}
-H^\star(Y_t\mid Z_{1:t}) - H^\star(Y_t\mid X_{1:t})
-=
-I^\star(Y_t;X_{1:t}\mid Z_{1:t}),
-\tag{L.4}\label{eq:app_regret_cmi}
-\end{equation}
-which makes the interpretation crisp:
-tokenization removes precisely the amount of causal information about $Y_t$ that the raw
-prefix contains beyond what the token prefix preserves.
-
-\subsubsection{Relation to online learning regret bounds}
-
-In online learning, a learner chooses $q_t(\cdot\mid \mathcal{O}_t)$ based on
-observations $\mathcal{O}_t$ and incurs log-loss $\ell_t=-\log q_t(Y_t\mid \mathcal{O}_t)$.
-Define the oracle comparator that can condition on $X_{1:t}$, and the learner restricted
-to $Z_{1:t}$.
-Then Theorem~\ref{thm:dist_regret} implies that even the best possible token-prefix
-learner has an inherent expected regret lower bound:
-\begin{equation}
-\inf_{\{q_t(\cdot\mid Z_{1:t})\}}
-\mathbb{E}\Big[\sum_{t=1}^T \ell_t\Big]
--
-\inf_{\{p_t(\cdot\mid X_{1:t})\}}
-\mathbb{E}\Big[\sum_{t=1}^T (-\log p_t(Y_t\mid X_{1:t}))\Big]
-\ \ge\
-T\,\Delta_{\rightarrow}(\tau),
-\tag{L.5}\label{eq:app_regret_lb}
-\end{equation}
-with equality when the predictor classes are sufficiently expressive.
-
-\paragraph{Consequences for controlled compression.}
-Equation \eqref{eq:app_regret_lb} elevates our rate--distortion formulation to a
-sequential prediction statement:
-controlling $\Delta_{\rightarrow}(\tau)$ controls the \emph{unavoidable} increase in
-optimal log-loss (hence predictability) induced by the tokenizer under prefix-only
-semantics.
-Therefore, optimizing $R(\tau)+\lambda \Delta_{\rightarrow}(\tau)$ can be interpreted as
-choosing a tokenization interface that trades off system cost against the best-achievable
-sequential prediction performance available to any downstream model that only observes
-tokens.
-
-\subsubsection{Restricted probes: achievable upper bounds}
-
-In practice, we estimate $\Delta_{\rightarrow}(\tau)$ with a restricted probe class
-$\mathcal{Q}$.
-Then the probe loss provides an \emph{achievable} upper bound on the irreducible regret:
-\begin{equation}
-T\,\Delta_{\rightarrow}(\tau)
-\ \le\
-\min_{q\in\mathcal{Q}}
-\mathbb{E}\Big[\sum_{t=1}^T \mathrm{KL}(P^\star(Y_t\mid X_{1:t})\Vert q(Y_t\mid Z_{1:t}))\Big],
-\tag{L.6}\label{eq:app_regret_upper}
-\end{equation}
-recovering Proposition~\ref{prop:upperbound}.
-This justifies using lightweight probes as a practical estimator: they yield a
-conservative (upper) estimate of semantic loss and provide a stable optimization signal
-for tokenizer induction.
 

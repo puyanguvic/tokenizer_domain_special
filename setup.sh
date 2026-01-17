@@ -6,6 +6,13 @@ cd "$ROOT_DIR"
 
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
 EXTRAS="${EXTRAS:-dev,hf}"
+CTOK_DEFAULT_TASK="${CTOK_DEFAULT_TASK:-waf_http}"
+CTOK_DEFAULT_MODEL="${CTOK_DEFAULT_MODEL:-roberta_base}"
+CTOK_DEFAULT_TOKENIZER="${CTOK_DEFAULT_TOKENIZER:-ctok_v1}"
+CTOK_CONFIG_ROOT="${CTOK_CONFIG_ROOT:-$ROOT_DIR}"
+CTOK_ARTIFACTS_DIR="${CTOK_ARTIFACTS_DIR:-$ROOT_DIR/artifacts/tokenizers}"
+CTOK_RESULTS_DIR="${CTOK_RESULTS_DIR:-$ROOT_DIR/results/runs}"
+CTOK_ENV_FILE="${CTOK_ENV_FILE:-$ROOT_DIR/.ctok_env}"
 
 usage() {
   cat <<'EOF'
@@ -60,8 +67,21 @@ fi
 
 uv pip install --python "$VENV_DIR/bin/python" -e "$INSTALL_TARGET"
 
+if [ -n "$CTOK_ENV_FILE" ]; then
+  cat > "$CTOK_ENV_FILE" <<EOF
+export CTOK_DEFAULT_TASK="$CTOK_DEFAULT_TASK"
+export CTOK_DEFAULT_MODEL="$CTOK_DEFAULT_MODEL"
+export CTOK_DEFAULT_TOKENIZER="$CTOK_DEFAULT_TOKENIZER"
+export CTOK_CONFIG_ROOT="$CTOK_CONFIG_ROOT"
+export CTOK_ARTIFACTS_DIR="$CTOK_ARTIFACTS_DIR"
+export CTOK_RESULTS_DIR="$CTOK_RESULTS_DIR"
+EOF
+fi
+
 cat <<EOF
 Setup complete.
 Activate the environment with:
   source "$VENV_DIR/bin/activate"
+Load ctok defaults with:
+  source "$CTOK_ENV_FILE"
 EOF
