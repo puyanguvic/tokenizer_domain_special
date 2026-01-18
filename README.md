@@ -44,6 +44,7 @@ tok = AutoTokenizer.from_pretrained("./ctok_http_8k", trust_remote_code=True)
 Notes:
 - Runtime is **fast** because the artifact includes `tokenizer.json` built with `tokenizers` (Rust).
 - Segmentation is greedy longest-match (WordPiece) with `continuing_subword_prefix=""`.
+- The tokenizer requires `ctok_meta.json` (co-located with `tokenizer.json`/`vocab.json`) to keep the build-time hygiene + pre-tokenizer pipeline locked at runtime.
 
 ## Experiments
 
@@ -73,8 +74,10 @@ Common build knobs:
 - `--boundaries` controls token boundary characters
 - `--no_boundary_ends` disables adding boundary-prefixed/suffixed tokens
 - `--max_base_chars` caps the base character set size
+- `--base_chars_max_samples` limits how many samples are scanned for base chars (default 200000)
 - `--pretokenizer generic` enables structure-aware pre-tokenization (HTML/HTTP-friendly)
 - `--junk_penalty_beta` penalizes high-entropy/value-like fragments (default 0.5)
+- `--lowercase` lowercases text before hygiene/pretokenization (off by default)
 
 Performance tips for large corpora:
 - Prefer direct HF dataset builds (default) to avoid Arrow->jsonl conversion.

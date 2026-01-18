@@ -130,17 +130,20 @@ def collect_base_chars(
     max_chars: int,
     add_ascii: bool = True,
     extra_tokens: Optional[Sequence[str]] = None,
+    max_samples: Optional[int] = None,
 ) -> Set[str]:
     chars: Set[str] = set()
     if add_ascii:
         chars.update(hygiene.ascii_base_chars())
     if extra_tokens:
         chars.update(extra_tokens)
-    for _, x in pairs:
+    for idx, (_, x) in enumerate(pairs):
         for ch in x:
             chars.add(ch)
             if len(chars) >= max_chars:
                 return chars
+        if max_samples is not None and (idx + 1) >= max_samples:
+            break
     return chars
 
 
@@ -441,6 +444,8 @@ def write_artifact(
         "match_rule": "left-to-right longest-match (WordPiece greedy, continuing_subword_prefix='')",
         "boundary_chars": sorted(list(boundaries)),
         "model_max_length": int(build_args.get("model_max_length", 512)),
+        "pipeline_locked": True,
+        "lowercase": bool(build_args.get("lowercase", False)),
         "hygiene": hygiene_cfg.to_dict(),
         "pretokenizer": pretok_cfg.to_dict(),
         "hygiene_metrics": hygiene_metrics,
@@ -518,10 +523,12 @@ def main():
     ap.add_argument("--mi_max_samples", type=int, default=20000)
     ap.add_argument("--mi_top_k", type=int, default=50000)
     ap.add_argument("--max_base_chars", type=int, default=5000)
+    ap.add_argument("--base_chars_max_samples", type=int, default=200000)
     ap.add_argument("--no_ascii_base", action="store_true")
     ap.add_argument("--model_max_length", type=int, default=512)
     ap.add_argument("--emit_code", action="store_true")
     ap.add_argument("--no_hygiene", action="store_true")
+    ap.add_argument("--lowercase", action="store_true", help="Lowercase text before hygiene/pretokenization")
     ap.add_argument("--pretokenizer", choices=["none", "generic"], default="none")
     ap.add_argument("--no_filter_value_fragments", action="store_true")
     ap.add_argument("--min_doc_freq", type=int, default=1)
@@ -562,10 +569,12 @@ def main():
     if not pretok_cfg.enabled:
         pretok_cfg.patterns = []
 
+    if args.lowercase:
+        pairs = [(y, x.lower()) for y, x in pairs]
     if hygiene_cfg.enabled:
-        pairs = [(y, hygiene.apply_hygiene(x, hygiene_cfg)) for y, x in pairs]
+        pairs = [(y, hygiene.apply_hygiene(x, hygiene_cfg)) for y, x in _progress(pairs, desc="Applying hygiene", unit="samples")]
     if pretok_cfg.enabled:
-        pairs = [(y, pretokenize.apply_pretokenize(x, pretok_cfg)) for y, x in pairs]
+        pairs = [(y, pretokenize.apply_pretokenize(x, pretok_cfg)) for y, x in _progress(pairs, desc="Applying pretokenizer", unit="samples")]
 
     special = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
 
@@ -575,6 +584,7 @@ def main():
         max_chars=args.max_base_chars,
         add_ascii=not args.no_ascii_base,
         extra_tokens=hygiene_cfg.typed_tokens,
+        max_samples=args.base_chars_max_samples,
     )
     # Ensure boundary chars present in base
     base_chars.update(boundaries)
@@ -633,9 +643,11 @@ def main():
         "no_boundary_ends": bool(args.no_boundary_ends),
         "no_ascii_base": bool(args.no_ascii_base),
         "max_base_chars": args.max_base_chars,
+        "base_chars_max_samples": args.base_chars_max_samples,
         "text_key": args.text_key,
         "label_key": args.label_key,
         "pretokenizer": args.pretokenizer,
+        "lowercase": bool(args.lowercase),
     }
 
     build_args.update(

@@ -21,6 +21,7 @@ except Exception:
     _tqdm = None
 
 _HYGIENE_CFG: Optional[hygiene.HygieneConfig] = None
+_PRETOK_CFG: Optional[pretokenize.PreTokenizerConfig] = None
 
 
 def _init_hygiene_worker(cfg_dict: Dict[str, object]) -> None:
@@ -33,6 +34,30 @@ def _apply_hygiene_sample(sample: Tuple[Optional[str], str]) -> Tuple[Optional[s
     if _HYGIENE_CFG is None:
         return y, x
     return y, hygiene.apply_hygiene(x, _HYGIENE_CFG)
+
+
+def _init_pretok_worker(cfg_dict: Dict[str, object]) -> None:
+    global _PRETOK_CFG
+    _PRETOK_CFG = pretokenize.PreTokenizerConfig.from_dict(cfg_dict)
+
+
+def _apply_pretok_sample(sample: Tuple[Optional[str], str]) -> Tuple[Optional[str], str]:
+    y, x = sample
+    if _PRETOK_CFG is None:
+        return y, x
+    return y, pretokenize.apply_pretokenize(x, _PRETOK_CFG)
+
+
+def _collect_base_chars_chunk(args: Tuple[List[object], Set[str], int]) -> Set[str]:
+    items, boundaries, max_base_chars = args
+    chars: Set[str] = set(boundaries)
+    for item in items:
+        s = _get_text(item)
+        for ch in s:
+            chars.add(ch)
+            if len(chars) >= max_base_chars:
+                return chars
+    return chars
 
 
 def _progress(iterable, total=None, desc: str = "", unit: str = "it"):
@@ -154,12 +179,20 @@ def corpus_iter(fmt: str, path: str, max_samples: Optional[int], text_key: str, 
     raise ValueError(f"Unknown --format: {fmt}")
 
 
+def _get_text(item: object) -> str:
+    if isinstance(item, (list, tuple)) and len(item) == 2:
+        return str(item[1])
+    return str(item)
+
+
 def collect_base_chars(
-    samples: Iterable[str],
+    samples: Iterable[object],
     boundaries: Set[str],
     max_base_chars: int,
     use_ascii_base: bool,
     extra_tokens: Optional[Sequence[str]] = None,
+    max_samples: Optional[int] = None,
+    num_workers: int = 1,
 ) -> Set[str]:
     chars: Set[str] = set()
     if use_ascii_base:
@@ -167,18 +200,49 @@ def collect_base_chars(
     chars |= boundaries
     if extra_tokens:
         chars.update(extra_tokens)
-    for s in samples:
-        for ch in s:
-            chars.add(ch)
+    sample_list = samples if isinstance(samples, list) else list(samples)
+    total = len(sample_list)
+    if max_samples is not None:
+        sample_list = sample_list[:max_samples]
+        total = len(sample_list)
+
+    if num_workers <= 1 or total == 0:
+        iterator = _progress(sample_list, total=total, desc="Collecting base chars", unit="samples")
+        for item in iterator:
+            s = _get_text(item)
+            for ch in s:
+                chars.add(ch)
+                if len(chars) >= max_base_chars:
+                    return chars
+        return chars
+
+    print(f"Collecting base chars with {num_workers} workers")
+    chunk_size = max(1, total // (num_workers * 4))
+    chunks = [sample_list[i : i + chunk_size] for i in range(0, total, chunk_size)]
+    args_list = [(c, boundaries, max_base_chars) for c in chunks]
+    with mp.Pool(processes=num_workers) as pool:
+        results_iter = pool.imap_unordered(_collect_base_chars_chunk, args_list, chunksize=1)
+        if _tqdm is not None:
+            results_iter = _tqdm(
+                results_iter,
+                total=len(args_list),
+                desc="Collecting base chars (mp)",
+                unit="chunks",
+                file=sys.stdout,
+                dynamic_ncols=True,
+            )
+        for cset in results_iter:
+            chars.update(cset)
             if len(chars) >= max_base_chars:
-                return chars
+                break
     return chars
 
 
-def _collect_candidates_chunk(args: Tuple[List[str], Set[str], int, int, bool, int]) -> Counter[str]:
-    texts, boundaries, max_len, min_freq, allow_boundary_at_ends, max_chars_per_sample = args
+def _collect_candidates_chunk(args: Tuple[List[object], Set[str], int, int, bool, int]) -> Counter[str]:
+    items, boundaries, max_len, min_freq, allow_boundary_at_ends, max_chars_per_sample = args
     cnt: Counter[str] = Counter()
-    for text in texts:
+    for item in items:
+        text = _get_text(item)
         s = text[:max_chars_per_sample]
         n = len(s)
         i = 0
@@ -236,12 +300,13 @@ def _count_token_label_chunk(
 
 
 def _collect_doc_stats_chunk(
-    args: Tuple[List[str], Set[str], int, bool, int, Set[str]]
+    args: Tuple[List[object], Set[str], int, bool, int, Set[str]]
 ) -> Tuple[Counter[str], Dict[str, int]]:
-    texts, candidates, max_len, allow_boundary_at_ends, max_chars_per_sample, boundaries = args
+    items, candidates, max_len, allow_boundary_at_ends, max_chars_per_sample, boundaries = args
     doc_freq: Counter[str] = Counter()
     max_in_doc: Dict[str, int] = {}
-    for text in texts:
+    for item in items:
+        text = _get_text(item)
         s = text[:max_chars_per_sample]
         n = len(s)
         i = 0
@@ -275,7 +340,7 @@ def _collect_doc_stats_chunk(
 
 
 def collect_candidates(
-    texts: Iterable[str],
+    texts: Iterable[object],
     boundaries: Set[str],
     max_len: int,
     min_freq: int,
@@ -284,10 +349,11 @@ def collect_candidates(
     num_workers: int = 1,
 ) -> Counter[str]:
     cnt: Counter[str] = Counter()
-    text_list = list(texts)
+    text_list = texts if isinstance(texts, list) else list(texts)
     total = len(text_list)
     if num_workers <= 1 or total == 0:
-        for text in _progress(text_list, total=total, desc="Collecting candidates", unit="samples"):
+        for item in _progress(text_list, total=total, desc="Collecting candidates", unit="samples"):
+            text = _get_text(item)
             s = text[:max_chars_per_sample]
             n = len(s)
             i = 0
@@ -425,7 +491,7 @@ def build_vocab(
 
 
 def collect_doc_stats(
-    texts: Iterable[str],
+    texts: Iterable[object],
     candidates: Set[str],
     boundaries: Set[str],
     max_len: int,
@@ -437,7 +503,8 @@ def collect_doc_stats(
     max_in_doc: Dict[str, int] = {}
     total = len(texts) if hasattr(texts, "__len__") else None
     if num_workers <= 1 or total == 0:
-        for text in _progress(texts, total=total, desc="Doc stats", unit="samples"):
+        for item in _progress(texts, total=total, desc="Doc stats", unit="samples"):
+            text = _get_text(item)
             s = text[:max_chars_per_sample]
             n = len(s)
             i = 0
@@ -469,7 +536,7 @@ def collect_doc_stats(
                     max_in_doc[tok] = local[tok]
     else:
         print(f"Doc stats with {num_workers} workers")
-        text_list = list(texts)
+        text_list = texts if isinstance(texts, list) else list(texts)
         chunk_size = max(1, len(text_list) // (num_workers * 4))
         chunks = [text_list[i : i + chunk_size] for i in range(0, len(text_list), chunk_size)]
         args_list = [(c, candidates, max_len, allow_boundary_at_ends, max_chars_per_sample, boundaries) for c in chunks]
@@ -675,6 +742,8 @@ def write_artifact(
     meta = {
         "match_special_tokens": False,
         "artifact_version": "ctok-fast-v1",
+        "pipeline_locked": True,
+        "lowercase": bool(hygiene_build.get("lowercase", False)),
         "hygiene": hygiene_cfg.to_dict(),
         "pretokenizer": pretok_cfg.to_dict(),
         "hygiene_metrics": hygiene_metrics,
@@ -691,6 +760,8 @@ def write_artifact(
             "lambda_sem": lambda_sem,
             "semantic_top_k": semantic_top_k,
             "pretokenizer": "generic" if pretok_cfg.enabled else "none",
+            "lowercase": bool(hygiene_build.get("lowercase", False)),
+            "base_chars_max_samples": args.base_chars_max_samples,
             **hygiene_build,
         },
     }
@@ -766,6 +837,8 @@ def build_ctok_from_samples(
     if not pretok_cfg.enabled:
         pretok_cfg.patterns = []
 
+    if args.lowercase:
+        samples = [(y, x.lower()) for y, x in samples]
     if hygiene_cfg.enabled:
         if num_workers > 1 and len(samples) > 0:
             print(f"Applying hygiene with {num_workers} workers")
@@ -785,8 +858,24 @@ def build_ctok_from_samples(
         else:
             samples = [(y, hygiene.apply_hygiene(x, hygiene_cfg)) for y, x in samples]
     if pretok_cfg.enabled:
-        samples = [(y, pretokenize.apply_pretokenize(x, pretok_cfg)) for y, x in samples]
-    texts = [x for _, x in samples]
+        if num_workers > 1 and len(samples) > 0:
+            print(f"Applying pretokenizer with {num_workers} workers")
+            cfg_dict = pretok_cfg.to_dict()
+            with mp.Pool(processes=num_workers, initializer=_init_pretok_worker, initargs=(cfg_dict,)) as pool:
+                results_iter = pool.imap(_apply_pretok_sample, samples, chunksize=256)
+                if _tqdm is not None:
+                    results_iter = _tqdm(
+                        results_iter,
+                        total=len(samples),
+                        desc="Applying pretokenizer",
+                        unit="samples",
+                        file=sys.stdout,
+                        dynamic_ncols=True,
+                    )
+                samples = list(results_iter)
+        else:
+            samples = [(y, pretokenize.apply_pretokenize(x, pretok_cfg)) for y, x in samples]
+    texts = samples
 
     base_chars = collect_base_chars(
         texts,
@@ -794,6 +883,8 @@ def build_ctok_from_samples(
         max_base_chars=args.max_base_chars,
         use_ascii_base=args.use_ascii_base,
         extra_tokens=hygiene_cfg.typed_tokens,
+        max_samples=args.base_chars_max_samples,
+        num_workers=num_workers,
     )
 
     allow_boundary_at_ends = not args.no_boundary_ends
@@ -826,10 +917,14 @@ def build_ctok_from_samples(
     token_label_counts: Dict[str, Dict[str, int]] = {}
 
     if args.semantic_mode == "mi" and label_key is not None:
-        labeled = [(y, x) for y, x in samples if y is not None]
+        labeled = [
+            (str(y), x)
+            for y, x in _progress(samples, total=len(samples), desc="Preparing labeled", unit="samples")
+            if y is not None
+        ]
         if labeled:
             label_counts, token_label_counts = build_token_label_counts(
-                labeled_samples=[(str(y), x) for y, x in labeled],
+                labeled_samples=labeled,
                 boundaries=boundaries,
                 max_len=args.max_len,
                 min_freq=args.min_freq,
@@ -881,6 +976,7 @@ def build_ctok_from_samples(
             "min_doc_freq": args.min_doc_freq,
             "max_doc_concentration": args.max_doc_concentration,
             "junk_penalty_beta": args.junk_penalty_beta,
+            "lowercase": bool(args.lowercase),
         },
     )
 
@@ -907,12 +1003,14 @@ def main() -> None:
 
     ap.add_argument("--use_ascii_base", action="store_true", help="Include ASCII chars (0..127) in base vocab")
     ap.add_argument("--max_base_chars", type=int, default=4096)
+    ap.add_argument("--base_chars_max_samples", type=int, default=200000)
     ap.add_argument("--num_workers", type=int, default=0, help="Parallel workers (0=auto)")
 
     ap.add_argument("--semantic_mode", choices=["none", "mi"], default="none")
     ap.add_argument("--lambda_sem", type=float, default=0.0)
     ap.add_argument("--semantic_top_k", type=int, default=50000)
     ap.add_argument("--no_hygiene", action="store_true", help="Disable hygiene replacements")
+    ap.add_argument("--lowercase", action="store_true", help="Lowercase text before hygiene/pretokenization")
     ap.add_argument("--pretokenizer", choices=["none", "generic"], default="none")
     ap.add_argument("--no_filter_value_fragments", action="store_true", help="Disable value-fragment candidate filtering")
     ap.add_argument("--min_doc_freq", type=int, default=1)

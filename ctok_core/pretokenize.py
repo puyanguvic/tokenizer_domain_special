@@ -87,12 +87,12 @@ def default_pretokenizer_config() -> PreTokenizerConfig:
         PreTokenizePattern("sep_comma", r",", r" , "),
         PreTokenizePattern("sep_slash", r"/", r" / "),
         PreTokenizePattern("sep_backslash", r"(?<!\\)\\(?!\\)", " \\ "),
-        PreTokenizePattern("sep_lparen", r"\\(", r" ( "),
-        PreTokenizePattern("sep_rparen", r"\\)", r" ) "),
-        PreTokenizePattern("sep_lbrack", r"\\[", r" [ "),
-        PreTokenizePattern("sep_rbrack", r"\\]", r" ] "),
-        PreTokenizePattern("sep_lbrace", r"\\{", r" { "),
-        PreTokenizePattern("sep_rbrace", r"\\}", r" } "),
+        PreTokenizePattern("sep_lparen", r"\(", r" ( "),
+        PreTokenizePattern("sep_rparen", r"\)", r" ) "),
+        PreTokenizePattern("sep_lbrack", r"\[", r" [ "),
+        PreTokenizePattern("sep_rbrack", r"\]", r" ] "),
+        PreTokenizePattern("sep_lbrace", r"\{", r" { "),
+        PreTokenizePattern("sep_rbrace", r"\}", r" } "),
         PreTokenizePattern("sep_pipe", r"\\|", r" | "),
     ]
     return PreTokenizerConfig(enabled=True, patterns=patterns)

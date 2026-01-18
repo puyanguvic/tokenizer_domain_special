@@ -226,9 +226,14 @@ class CTokTokenizer(PreTrainedTokenizer):
             raise ValueError("vocab.json must be a dict {token: id}.")
 
         meta: Dict[str, Any] = {}
-        if meta_file is not None and os.path.exists(meta_file):
-            with open(meta_file, "r", encoding="utf-8") as f:
-                meta = json.load(f)
+        if meta_file is None or not os.path.exists(meta_file):
+            raise ValueError("ctok_meta.json is required to ensure pipeline symmetry.")
+        vocab_dir = os.path.dirname(os.path.abspath(vocab_file))
+        meta_dir = os.path.dirname(os.path.abspath(meta_file))
+        if vocab_dir != meta_dir:
+            raise ValueError("ctok_meta.json must live alongside vocab.json to keep pipeline locked.")
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta = json.load(f)
 
         pad = kwargs.get("pad_token", "[PAD]")
         unk = kwargs.get("unk_token", "[UNK]")
@@ -248,7 +253,10 @@ class CTokTokenizer(PreTrainedTokenizer):
         self.token_to_id: Dict[str, int] = {str(k): int(v) for k, v in token_to_id.items()}
         self.id_to_token: Dict[int, str] = {v: k for k, v in self.token_to_id.items()}
 
+        if meta.get("pipeline_locked") and ("hygiene" not in meta or "pretokenizer" not in meta):
+            raise ValueError("Locked pipeline requires hygiene/pretokenizer config in ctok_meta.json.")
         self.match_special_tokens: bool = bool(meta.get("match_special_tokens", False))
+        self.lowercase: bool = bool(meta.get("lowercase", False))
         self.hygiene_cfg = hygiene.HygieneConfig.from_dict(meta.get("hygiene", {})) if meta.get("hygiene") else hygiene.HygieneConfig(enabled=False)
         self.pretok_cfg = pretokenize.PreTokenizerConfig.from_dict(meta.get("pretokenizer", {})) if meta.get("pretokenizer") else pretokenize.PreTokenizerConfig(enabled=False)
 
@@ -278,6 +286,8 @@ class CTokTokenizer(PreTrainedTokenizer):
         return len(self.token_to_id)
 
     def _tokenize(self, text: str) -> List[str]:
+        if self.lowercase:
+            text = text.lower()
         text = hygiene.apply_hygiene(text, self.hygiene_cfg)
         text = pretokenize.apply_pretokenize(text, self.pretok_cfg)
         toks: List[str] = []

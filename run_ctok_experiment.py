@@ -236,6 +236,8 @@ def build_ctok_artifact(
         args.boundaries,
         "--max_base_chars",
         str(args.max_base_chars),
+        "--base_chars_max_samples",
+        str(args.base_chars_max_samples),
         "--max_samples",
         max_samples_str,
         "--semantic_mode",
@@ -255,6 +257,8 @@ def build_ctok_artifact(
         "--num_workers",
         str(args.num_workers),
     ]
+    if args.lowercase:
+        cmd.append("--lowercase")
     if args.pretokenizer != "none":
         cmd.extend(["--pretokenizer", args.pretokenizer])
     if args.use_ascii_base:
@@ -472,6 +476,7 @@ def main() -> None:
     ap.add_argument("--min_doc_freq", type=int, default=1)
     ap.add_argument("--max_doc_concentration", type=float, default=1.0)
     ap.add_argument("--junk_penalty_beta", type=float, default=0.5)
+    ap.add_argument("--lowercase", action="store_true")
     ap.add_argument("--pretokenizer", choices=["none", "generic"], default="none")
 
     ap.add_argument("--vocab_size", type=int, default=8192)
@@ -481,6 +486,7 @@ def main() -> None:
     ap.add_argument("--boundaries", type=str, default="=&?:/\\n\\t <>\\\"'")
     ap.add_argument("--no_boundary_ends", action="store_true")
     ap.add_argument("--max_base_chars", type=int, default=4096)
+    ap.add_argument("--base_chars_max_samples", type=int, default=200000)
     ap.add_argument("--semantic_mode", choices=["none", "mi"], default="none")
     ap.add_argument("--lambda_sem", type=float, default=0.0)
     ap.add_argument("--semantic_top_k", type=int, default=50000)

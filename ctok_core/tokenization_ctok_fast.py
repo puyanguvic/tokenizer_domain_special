@@ -180,9 +180,17 @@ class CTokTokenizerFast(PreTrainedTokenizerFast):
         super().__init__(tokenizer_file=tokenizer_file, **kwargs)
 
         meta: dict = {}
-        if meta_file is not None and os.path.exists(meta_file):
-            with open(meta_file, "r", encoding="utf-8") as f:
-                meta = json.load(f)
+        if meta_file is None or not os.path.exists(meta_file):
+            raise ValueError("ctok_meta.json is required to ensure pipeline symmetry.")
+        tok_dir = os.path.dirname(os.path.abspath(tokenizer_file))
+        meta_dir = os.path.dirname(os.path.abspath(meta_file))
+        if tok_dir != meta_dir:
+            raise ValueError("ctok_meta.json must live alongside tokenizer.json to keep pipeline locked.")
+        with open(meta_file, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if meta.get("pipeline_locked") and ("hygiene" not in meta or "pretokenizer" not in meta):
+            raise ValueError("Locked pipeline requires hygiene/pretokenizer config in ctok_meta.json.")
+        self.lowercase: bool = bool(meta.get("lowercase", False))
         self.hygiene_cfg = hygiene.HygieneConfig.from_dict(meta.get("hygiene", {})) if meta.get("hygiene") else hygiene.HygieneConfig(enabled=False)
         self.pretok_cfg = pretokenize.PreTokenizerConfig.from_dict(meta.get("pretokenizer", {})) if meta.get("pretokenizer") else pretokenize.PreTokenizerConfig(enabled=False)
 
@@ -192,14 +200,20 @@ class CTokTokenizerFast(PreTrainedTokenizerFast):
     def _apply_pretokenize(self, text: str) -> str:
         return pretokenize.apply_pretokenize(text, self.pretok_cfg)
 
+    def _apply_lowercase(self, text: str) -> str:
+        return text.lower() if self.lowercase else text
+
     def tokenize(self, text: str, **kwargs):
+        text = self._apply_lowercase(text)
         text = self._apply_pretokenize(self._apply_hygiene(text))
         return super().tokenize(text, **kwargs)
 
     def _encode_plus(self, text, text_pair=None, **kwargs):
         if isinstance(text, str):
+            text = self._apply_lowercase(text)
             text = self._apply_pretokenize(self._apply_hygiene(text))
         if isinstance(text_pair, str):
+            text_pair = self._apply_lowercase(text_pair)
             text_pair = self._apply_pretokenize(self._apply_hygiene(text_pair))
         return super()._encode_plus(text, text_pair=text_pair, **kwargs)
 
@@ -209,11 +223,14 @@ class CTokTokenizerFast(PreTrainedTokenizerFast):
             if isinstance(item, (list, tuple)) and len(item) == 2:
                 a, b = item
                 if isinstance(a, str):
+                    a = self._apply_lowercase(a)
                     a = self._apply_pretokenize(self._apply_hygiene(a))
                 if isinstance(b, str):
+                    b = self._apply_lowercase(b)
                     b = self._apply_pretokenize(self._apply_hygiene(b))
                 processed.append((a, b))
             elif isinstance(item, str):
+                item = self._apply_lowercase(item)
                 processed.append(self._apply_pretokenize(self._apply_hygiene(item)))
             else:
                 processed.append(item)

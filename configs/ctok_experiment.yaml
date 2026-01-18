@@ -22,6 +22,7 @@ min_doc_freq: 1
 max_doc_concentration: 1.0
 junk_penalty_beta: 0.5
 pretokenizer: generic
+lowercase: false
 vocab_size: 8192
 max_len: 12
 min_freq: 50
@@ -30,6 +31,7 @@ lambda_sem: 0.0
 semantic_top_k: 50000
 model_max_length: 512
 use_ascii_base: false
+base_chars_max_samples: 200000
 emit_code: false
 hydra:
   run:
