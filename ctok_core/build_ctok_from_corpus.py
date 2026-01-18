@@ -11,10 +11,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+try:
+    from tqdm import tqdm as _tqdm
+except Exception:
+    _tqdm = None
+
 
 def parse_boundaries(boundaries: str) -> Set[str]:
-    # Interpret escapes (\n, \t, \" ...) using JSON string decoding
-    decoded = json.loads('"' + boundaries.replace('"', '\\"') + '"')
+    # Interpret escapes (\n, \t, \" ...) using unicode_escape decoding.
+    decoded = boundaries.encode("utf-8").decode("unicode_escape")
     return set(decoded)
 
 
@@ -141,7 +146,11 @@ def collect_candidates(
     max_chars_per_sample: int,
 ) -> Counter[str]:
     cnt: Counter[str] = Counter()
-    for text in texts:
+    total = len(texts) if hasattr(texts, "__len__") else None
+    iterator = texts
+    if _tqdm is not None:
+        iterator = _tqdm(texts, total=total, desc="Collecting candidates", unit="samples")
+    for text in iterator:
         s = text[:max_chars_per_sample]
         n = len(s)
         i = 0
@@ -266,7 +275,11 @@ def build_token_label_counts(
     label_counts: Dict[str, int] = Counter([y for y, _ in labeled_samples])
     token_label_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-    for y, x in labeled_samples:
+    total = len(labeled_samples) if hasattr(labeled_samples, "__len__") else None
+    iterator = labeled_samples
+    if _tqdm is not None:
+        iterator = _tqdm(labeled_samples, total=total, desc="Counting token-labels", unit="samples")
+    for y, x in iterator:
         # simple presence counting in each sample: count all occurrences (not just binary) for cheap signal
         s = x[:max_chars_per_sample]
         n = len(s)

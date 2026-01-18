@@ -7,8 +7,13 @@ dist/
 
 # Virtual environments
 .venv/
+.pytest_cache/
+datasets/hf_cache/
+datasets/corpus/
+tokenizers/
 .env
 .ctok_env
+.hydra/
 
 # Tooling caches
 .mypy_cache/

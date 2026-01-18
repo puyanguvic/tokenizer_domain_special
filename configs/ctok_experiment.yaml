@@ -1,0 +1,30 @@
+dataset: logfit-project/HDFS_v1
+config: ""
+split: train
+text_key: ""
+label_key: ""
+tokenizer_name: ""
+tokenizer_root: tokenizers
+outdir: ""
+corpus_out: ""
+max_samples: 200000
+streaming: false
+preview: 3
+sample_ratio: 0.1
+seed: 42
+cache_dir: datasets/hf_cache
+force_corpus: false
+vocab_size: 8192
+max_len: 12
+min_freq: 50
+semantic_mode: none
+lambda_sem: 0.0
+semantic_top_k: 50000
+model_max_length: 512
+use_ascii_base: false
+emit_code: false
+hydra:
+  run:
+    dir: .
+  job:
+    chdir: false

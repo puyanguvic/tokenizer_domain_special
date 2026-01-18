@@ -8,10 +8,15 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
+try:
+    from tqdm import tqdm as _tqdm
+except Exception:
+    _tqdm = None
+
 
 def parse_escaped_chars(s: str) -> Set[str]:
     """Parse a boundary string with escapes (e.g. "=&?:/\\n\\t \"'")."""
-    decoded = json.loads('"' + s.replace('"', '\\"') + '"')
+    decoded = s.encode("utf-8").decode("unicode_escape")
     return set(decoded)
 
 
@@ -124,7 +129,11 @@ def collect_candidates(
     max_chars_per_sample: int,
 ) -> Counter[str]:
     cnt: Counter[str] = Counter()
-    for _, text in pairs:
+    total = len(pairs) if hasattr(pairs, "__len__") else None
+    iterator = pairs
+    if _tqdm is not None:
+        iterator = _tqdm(pairs, total=total, desc="Collecting candidates", unit="samples")
+    for _, text in iterator:
         s = text[:max_chars_per_sample]
         n = len(s)
         i = 0
@@ -173,7 +182,11 @@ def estimate_mi_scores(
     token_label_counts: Dict[str, Counter[str]] = {c: Counter() for c in cand_set}
 
     n = 0
-    for y, x in pairs:
+    total = len(pairs) if hasattr(pairs, "__len__") else None
+    iterator = pairs
+    if _tqdm is not None:
+        iterator = _tqdm(pairs, total=total, desc="Estimating MI", unit="samples")
+    for y, x in iterator:
         if y is None:
             continue
         y = str(y)
