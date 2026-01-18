@@ -11,6 +11,7 @@ import multiprocessing as mp
 import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
+import gc
 
 from . import hygiene
 from . import pretokenize
@@ -193,6 +194,7 @@ def collect_base_chars(
     extra_tokens: Optional[Sequence[str]] = None,
     max_samples: Optional[int] = None,
     num_workers: int = 1,
+    chunk_factor: int = 4,
 ) -> Set[str]:
     chars: Set[str] = set()
     if use_ascii_base:
@@ -217,7 +219,7 @@ def collect_base_chars(
         return chars
 
     print(f"Collecting base chars with {num_workers} workers")
-    chunk_size = max(1, total // (num_workers * 4))
+    chunk_size = max(1, total // (num_workers * max(chunk_factor, 1)))
     chunks = [sample_list[i : i + chunk_size] for i in range(0, total, chunk_size)]
     args_list = [(c, boundaries, max_base_chars) for c in chunks]
     with mp.Pool(processes=num_workers) as pool:
@@ -265,15 +267,34 @@ def _collect_candidates_chunk(args: Tuple[List[object], Set[str], int, int, bool
     return cnt
 
 
+def _chunk_by_char_budget(items: List[object], max_chars_per_sample: int, target_chars: int) -> List[List[object]]:
+    chunks: List[List[object]] = []
+    cur: List[object] = []
+    cur_chars = 0
+    for item in items:
+        s = _get_text(item)
+        cur.append(item)
+        cur_chars += min(len(s), max_chars_per_sample)
+        if cur_chars >= target_chars:
+            chunks.append(cur)
+            cur = []
+            cur_chars = 0
+    if cur:
+        chunks.append(cur)
+    return chunks
+
+
 def _count_token_label_chunk(
-    args: Tuple[List[Tuple[Optional[str], str]], Set[str], int, bool, int, Set[str]]
+    args: Tuple[List[int], List[Optional[str]], List[str], Set[str], int, bool, int, Set[str]]
 ) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
-    chunk, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top = args
+    idxs, labels, texts, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top = args
     local_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     local_labels: Counter[str] = Counter()
-    for y, x in chunk:
+    for i in idxs:
+        y = labels[i]
         if y is None:
             continue
+        x = texts[i]
         local_labels[y] += 1
         s = x[:max_chars_per_sample]
         n = len(s)
@@ -349,6 +370,9 @@ def collect_candidates(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_factor: int = 4,
+    chunk_chars: int = 0,
 ) -> Counter[str]:
     cnt: Counter[str] = Counter()
     text_list = texts if isinstance(texts, list) else list(texts)
@@ -377,11 +401,14 @@ def collect_candidates(
                 i += 1
     else:
         print(f"Collecting candidates with {num_workers} workers")
-        chunk_size = max(1, total // (num_workers * 4))
-        chunks = [text_list[i : i + chunk_size] for i in range(0, total, chunk_size)]
+        if chunk_chars and chunk_chars > 0:
+            chunks = _chunk_by_char_budget(text_list, max_chars_per_sample, chunk_chars)
+        else:
+            chunk_size = max(1, total // (num_workers * max(chunk_factor, 1)))
+            chunks = [text_list[i : i + chunk_size] for i in range(0, total, chunk_size)]
         args_list = [(c, boundaries, max_len, min_freq, allow_boundary_at_ends, max_chars_per_sample) for c in chunks]
         with mp.Pool(processes=num_workers) as pool:
-            results_iter = pool.imap_unordered(_collect_candidates_chunk, args_list, chunksize=1)
+            results_iter = pool.imap_unordered(_collect_candidates_chunk, args_list, chunksize=mp_chunksize)
             if _tqdm is not None:
                 results_iter = _tqdm(
                     results_iter,
@@ -500,6 +527,8 @@ def collect_doc_stats(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_factor: int = 4,
 ) -> Tuple[Counter[str], Dict[str, int]]:
     doc_freq: Counter[str] = Counter()
     max_in_doc: Dict[str, int] = {}
@@ -539,11 +568,11 @@ def collect_doc_stats(
     else:
         print(f"Doc stats with {num_workers} workers")
         text_list = texts if isinstance(texts, list) else list(texts)
-        chunk_size = max(1, len(text_list) // (num_workers * 4))
+        chunk_size = max(1, len(text_list) // (num_workers * max(chunk_factor, 1)))
         chunks = [text_list[i : i + chunk_size] for i in range(0, len(text_list), chunk_size)]
         args_list = [(c, candidates, max_len, allow_boundary_at_ends, max_chars_per_sample, boundaries) for c in chunks]
         with mp.Pool(processes=num_workers) as pool:
-            results_iter = pool.imap_unordered(_collect_doc_stats_chunk, args_list, chunksize=1)
+            results_iter = pool.imap_unordered(_collect_doc_stats_chunk, args_list, chunksize=mp_chunksize)
             if _tqdm is not None:
                 results_iter = _tqdm(
                     results_iter,
@@ -574,9 +603,21 @@ def filter_candidates(
     min_doc_freq: int,
     max_doc_concentration: float,
     num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_factor: int = 4,
 ) -> Counter[str]:
     filtered = Counter()
-    for tok, cnt in candidates.items():
+    items_iter = candidates.items()
+    if _tqdm is not None:
+        items_iter = _tqdm(
+            items_iter,
+            total=len(candidates),
+            desc="Filtering candidates",
+            unit="tokens",
+            file=sys.stdout,
+            dynamic_ncols=True,
+        )
+    for tok, cnt in items_iter:
         if hygiene.is_typed_token_fragment(tok, typed_tokens):
             continue
         if filter_value_fragments and hygiene.is_value_fragment(tok):
@@ -586,6 +627,7 @@ def filter_candidates(
     if min_doc_freq <= 1 and max_doc_concentration >= 1.0:
         return filtered
 
+    print("Computing candidate doc stats...")
     doc_freq, max_in_doc = collect_doc_stats(
         texts,
         candidates=set(filtered.keys()),
@@ -594,9 +636,21 @@ def filter_candidates(
         allow_boundary_at_ends=allow_boundary_at_ends,
         max_chars_per_sample=max_chars_per_sample,
         num_workers=num_workers,
+        mp_chunksize=mp_chunksize,
+        chunk_factor=chunk_factor,
     )
     out = Counter()
-    for tok, cnt in filtered.items():
+    out_iter = filtered.items()
+    if _tqdm is not None:
+        out_iter = _tqdm(
+            out_iter,
+            total=len(filtered),
+            desc="Applying doc filters",
+            unit="tokens",
+            file=sys.stdout,
+            dynamic_ncols=True,
+        )
+    for tok, cnt in out_iter:
         if min_doc_freq > 1 and doc_freq.get(tok, 0) < min_doc_freq:
             continue
         if max_doc_concentration < 1.0:
@@ -608,7 +662,8 @@ def filter_candidates(
 
 
 def build_token_label_counts(
-    labeled_samples: List[Tuple[Optional[str], str]],
+    labels: List[Optional[str]],
+    texts: List[str],
     boundaries: Set[str],
     max_len: int,
     min_freq: int,
@@ -617,29 +672,34 @@ def build_token_label_counts(
     semantic_top_k: int,
     candidates: Optional[Counter[str]] = None,
     num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_factor: int = 4,
 ) -> Tuple[Dict[str, int], Dict[str, Dict[str, int]]]:
     # Build candidate list first, then count token occurrences by label for top_k.
-    texts = [x for y, x in labeled_samples if y is not None]
+    usable_texts = [t for y, t in zip(labels, texts) if y is not None]
     if candidates is None:
         candidates = collect_candidates(
-            texts=texts,
+            texts=usable_texts,
             boundaries=boundaries,
             max_len=max_len,
             min_freq=min_freq,
             allow_boundary_at_ends=allow_boundary_at_ends,
             max_chars_per_sample=max_chars_per_sample,
             num_workers=num_workers,
+            mp_chunksize=mp_chunksize,
         )
     top = set([tok for tok, _ in candidates.most_common(semantic_top_k)])
 
-    label_counts: Dict[str, int] = Counter([y for y, _ in labeled_samples if y is not None])
+    label_counts: Dict[str, int] = Counter([y for y in labels if y is not None])
     token_label_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
-    total = len(labeled_samples) if hasattr(labeled_samples, "__len__") else None
+    total = len(texts) if hasattr(texts, "__len__") else None
     if num_workers <= 1 or total == 0:
-        for y, x in _progress(labeled_samples, total=total, desc="Counting token-labels", unit="samples"):
+        for i in _progress(range(total), total=total, desc="Counting token-labels", unit="samples"):
+            y = labels[i]
             if y is None:
                 continue
+            x = texts[i]
             # simple presence counting in each sample: count all occurrences (not just binary) for cheap signal
             s = x[:max_chars_per_sample]
             n = len(s)
@@ -666,11 +726,15 @@ def build_token_label_counts(
                 i += 1
     else:
         print(f"Counting token-labels with {num_workers} workers")
-        chunk_size = max(1, total // (num_workers * 4))
-        chunks = [labeled_samples[i : i + chunk_size] for i in range(0, total, chunk_size)]
-        args_list = [(c, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top) for c in chunks]
+        chunk_size = max(1, total // (num_workers * max(chunk_factor, 1)))
+        idxs = list(range(total))
+        chunks = [idxs[i : i + chunk_size] for i in range(0, total, chunk_size)]
+        args_list = [
+            (c, labels, texts, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top)
+            for c in chunks
+        ]
         with mp.Pool(processes=num_workers) as pool:
-            results_iter = pool.imap_unordered(_count_token_label_chunk, args_list, chunksize=1)
+            results_iter = pool.imap_unordered(_count_token_label_chunk, args_list, chunksize=mp_chunksize)
             if _tqdm is not None:
                 results_iter = _tqdm(
                     results_iter,
@@ -766,6 +830,9 @@ def write_artifact(
             "pretokenizer": "generic" if pretok_cfg.enabled else "none",
             "lowercase": bool(hygiene_build.get("lowercase", False)),
             "base_chars_max_samples": args.base_chars_max_samples,
+            "mp_chunksize": args.mp_chunksize,
+            "mp_chunk_chars": args.mp_chunk_chars,
+            "mp_chunk_factor": args.mp_chunk_factor,
             **hygiene_build,
         },
     }
@@ -841,6 +908,19 @@ def build_ctok_from_samples(
     if not pretok_cfg.enabled:
         pretok_cfg.patterns = []
 
+    def _materialize_texts_labels(
+        iterable: Iterable[Tuple[Optional[str], str]],
+        total: int,
+        desc: str,
+    ) -> Tuple[List[str], List[Optional[str]]]:
+        texts: List[str] = []
+        labels: List[Optional[str]] = []
+        it = _progress(iterable, total=total, desc=desc, unit="samples")
+        for y, x in it:
+            labels.append(y)
+            texts.append(x)
+        return texts, labels
+
     if args.lowercase:
         samples = [(y, x.lower()) for y, x in samples]
     if hygiene_cfg.enabled:
@@ -848,7 +928,7 @@ def build_ctok_from_samples(
             print(f"Applying hygiene with {num_workers} workers")
             cfg_dict = hygiene_cfg.to_dict()
             with mp.Pool(processes=num_workers, initializer=_init_hygiene_worker, initargs=(cfg_dict,)) as pool:
-                results_iter = pool.imap(_apply_hygiene_sample, samples, chunksize=256)
+                results_iter = pool.imap(_apply_hygiene_sample, samples, chunksize=args.mp_chunksize)
                 if _tqdm is not None:
                     results_iter = _tqdm(
                         results_iter,
@@ -866,7 +946,7 @@ def build_ctok_from_samples(
             print(f"Applying pretokenizer with {num_workers} workers")
             cfg_dict = pretok_cfg.to_dict()
             with mp.Pool(processes=num_workers, initializer=_init_pretok_worker, initargs=(cfg_dict,)) as pool:
-                results_iter = pool.imap(_apply_pretok_sample, samples, chunksize=256)
+                results_iter = pool.imap(_apply_pretok_sample, samples, chunksize=args.mp_chunksize)
                 if _tqdm is not None:
                     results_iter = _tqdm(
                         results_iter,
@@ -876,10 +956,23 @@ def build_ctok_from_samples(
                         file=sys.stdout,
                         dynamic_ncols=True,
                     )
-                samples = list(results_iter)
+                texts, labels = _materialize_texts_labels(results_iter, len(samples), "Collecting pretokenized")
         else:
-            samples = [(y, pretokenize.apply_pretokenize(x, pretok_cfg)) for y, x in samples]
-    texts = samples
+            texts, labels = _materialize_texts_labels(
+                ((y, pretokenize.apply_pretokenize(x, pretok_cfg)) for y, x in samples),
+                len(samples),
+                "Applying pretokenizer",
+            )
+        print("Releasing pretokenizer samples...")
+        del samples
+        gc.collect()
+        print("Proceeding to base char collection...")
+    else:
+        texts, labels = _materialize_texts_labels(samples, len(samples), "Preparing text/labels")
+        print("Releasing samples...")
+        del samples
+        gc.collect()
+        print("Proceeding to base char collection...")
 
     base_chars = collect_base_chars(
         texts,
@@ -889,6 +982,7 @@ def build_ctok_from_samples(
         extra_tokens=hygiene_cfg.typed_tokens,
         max_samples=args.base_chars_max_samples,
         num_workers=num_workers,
+        chunk_factor=args.mp_chunk_factor,
     )
 
     allow_boundary_at_ends = not args.no_boundary_ends
@@ -901,6 +995,9 @@ def build_ctok_from_samples(
         allow_boundary_at_ends=allow_boundary_at_ends,
         max_chars_per_sample=args.max_chars_per_sample,
         num_workers=num_workers,
+        mp_chunksize=args.mp_chunksize,
+        chunk_factor=args.mp_chunk_factor,
+        chunk_chars=args.mp_chunk_chars,
     )
     cands_raw = cands
     cands = filter_candidates(
@@ -915,6 +1012,8 @@ def build_ctok_from_samples(
         min_doc_freq=args.min_doc_freq,
         max_doc_concentration=args.max_doc_concentration,
         num_workers=num_workers,
+        mp_chunksize=args.mp_chunksize,
+        chunk_factor=args.mp_chunk_factor,
     )
 
     label_counts: Dict[str, int] = {}
@@ -922,15 +1021,18 @@ def build_ctok_from_samples(
 
     if args.semantic_mode == "mi" and label_key is not None:
         label_counts, token_label_counts = build_token_label_counts(
-            labeled_samples=samples,
-                boundaries=boundaries,
-                max_len=args.max_len,
-                min_freq=args.min_freq,
-                allow_boundary_at_ends=allow_boundary_at_ends,
-                max_chars_per_sample=args.max_chars_per_sample,
-                semantic_top_k=args.semantic_top_k,
-                candidates=cands_raw,
-                num_workers=num_workers,
+            labels=labels,
+            texts=texts,
+            boundaries=boundaries,
+            max_len=args.max_len,
+            min_freq=args.min_freq,
+            allow_boundary_at_ends=allow_boundary_at_ends,
+            max_chars_per_sample=args.max_chars_per_sample,
+            semantic_top_k=args.semantic_top_k,
+            candidates=cands_raw,
+            num_workers=num_workers,
+            mp_chunksize=args.mp_chunksize,
+            chunk_factor=args.mp_chunk_factor,
         )
         if cands:
             token_label_counts = {k: v for k, v in token_label_counts.items() if k in cands}
@@ -1003,6 +1105,9 @@ def main() -> None:
     ap.add_argument("--max_base_chars", type=int, default=4096)
     ap.add_argument("--base_chars_max_samples", type=int, default=200000)
     ap.add_argument("--num_workers", type=int, default=0, help="Parallel workers (0=auto)")
+    ap.add_argument("--mp_chunksize", type=int, default=16)
+    ap.add_argument("--mp_chunk_factor", type=int, default=1, help="Chunks per worker; smaller = larger chunks")
+    ap.add_argument("--mp_chunk_chars", type=int, default=0, help="Target characters per chunk for candidate collection")
 
     ap.add_argument("--semantic_mode", choices=["none", "mi"], default="none")
     ap.add_argument("--lambda_sem", type=float, default=0.0)

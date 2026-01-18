@@ -256,6 +256,12 @@ def build_ctok_artifact(
         str(args.junk_penalty_beta),
         "--num_workers",
         str(args.num_workers),
+        "--mp_chunksize",
+        str(args.mp_chunksize),
+        "--mp_chunk_factor",
+        str(args.mp_chunk_factor),
+        "--mp_chunk_chars",
+        str(args.mp_chunk_chars),
     ]
     if args.lowercase:
         cmd.append("--lowercase")
@@ -463,6 +469,9 @@ def main() -> None:
     ap.add_argument("--corpus_out", default="", help="Where to write jsonl corpus when --write_corpus is set")
     ap.add_argument("--max_samples", type=int, default=0)
     ap.add_argument("--num_workers", type=int, default=0)
+    ap.add_argument("--mp_chunksize", type=int, default=16)
+    ap.add_argument("--mp_chunk_factor", type=int, default=1)
+    ap.add_argument("--mp_chunk_chars", type=int, default=0)
     ap.add_argument("--streaming", action="store_true")
     ap.add_argument("--preview", type=int, default=3, help="Show tokenization previews after build")
     ap.add_argument("--sample_ratio", type=float, default=1.0, help="Use only a fraction of the split (0-1]")

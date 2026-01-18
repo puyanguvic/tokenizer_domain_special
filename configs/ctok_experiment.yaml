@@ -9,6 +9,9 @@ outdir: ""
 corpus_out: ""
 max_samples: 0
 num_workers: 0
+mp_chunksize: 16
+mp_chunk_factor: 1
+mp_chunk_chars: 0
 streaming: false
 preview: 3
 sample_ratio: 1.0

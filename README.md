@@ -78,6 +78,9 @@ Common build knobs:
 - `--pretokenizer generic` enables structure-aware pre-tokenization (HTML/HTTP-friendly)
 - `--junk_penalty_beta` penalizes high-entropy/value-like fragments (default 0.5)
 - `--lowercase` lowercases text before hygiene/pretokenization (off by default)
+- `--mp_chunksize` increases multiprocessing task size to reduce scheduling overhead (default 16)
+- `--mp_chunk_factor` controls chunks per worker; lower values mean larger chunks (default 1)
+- `--mp_chunk_chars` splits candidate-collection chunks by character budget (0 = disabled)
 
 Performance tips for large corpora:
 - Prefer direct HF dataset builds (default) to avoid Arrow->jsonl conversion.
