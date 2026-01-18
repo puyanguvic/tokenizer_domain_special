@@ -27,6 +27,7 @@ python build_ctok_from_corpus.py \
   --max_len 12 \
   --min_freq 50 \
   --pretokenizer generic \
+  --no_boundary_ends \
   --semantic_mode mi --lambda_sem 50.0 \
   --use_ascii_base \
   --emit_code
@@ -53,13 +54,17 @@ python run_ctok_experiment_hydra.py \
   semantic_mode=mi \
   lambda_sem=50.0 \
   use_ascii_base=true \
-  emit_code=true
+  emit_code=true \
+  pretokenizer=generic \
+  no_boundary_ends=true
 python run_ctok_experiment.py \
   --dataset logfit-project/HDFS_v1 \
   --semantic_mode mi \
   --lambda_sem 50.0 \
   --use_ascii_base \
-  --emit_code
+  --emit_code \
+  --pretokenizer generic \
+  --no_boundary_ends
 By default, this builds directly from the HF dataset (no jsonl export). If you want to export and reuse a jsonl
 corpus, add `--write_corpus` (and use `--force_corpus` to rebuild an existing corpus).
 
@@ -118,7 +123,7 @@ python run_ctok_experiment2.py \
 Use `value_randomization_eval=true` to run a simple robustness check that randomizes
 high-cardinality values in the eval split.
 
-CTok hygiene (default on) replaces high-cardinality values with typed tokens (e.g., `<IPV4>`, `<UUID>`) at build
+CTok hygiene (default on) replaces high-cardinality values with typed tokens (e.g., `__IPV4__`, `__UUID__`) at build
 and runtime, and logs hygiene metrics in `ctok_meta.json`. You can disable it with `--no_hygiene` and control
 candidate filtering with `--no_filter_value_fragments`, `--min_doc_freq`, and `--max_doc_concentration`. The
 default filter also treats long pure-numeric strings as value fragments to keep vocab focused on structure.

@@ -5,6 +5,125 @@ from dataclasses import dataclass, field
 from typing import Dict, Iterable, List, Optional, Pattern, Set
 
 
+ALLOWED_NUMBERS: Set[str] = {
+    # HTTP status codes
+    "100",
+    "101",
+    "102",
+    "103",
+    "200",
+    "201",
+    "202",
+    "203",
+    "204",
+    "205",
+    "206",
+    "207",
+    "208",
+    "226",
+    "300",
+    "301",
+    "302",
+    "303",
+    "304",
+    "305",
+    "306",
+    "307",
+    "308",
+    "400",
+    "401",
+    "402",
+    "403",
+    "404",
+    "405",
+    "406",
+    "407",
+    "408",
+    "409",
+    "410",
+    "411",
+    "412",
+    "413",
+    "414",
+    "415",
+    "416",
+    "417",
+    "418",
+    "421",
+    "422",
+    "423",
+    "424",
+    "425",
+    "426",
+    "428",
+    "429",
+    "431",
+    "451",
+    "500",
+    "501",
+    "502",
+    "503",
+    "504",
+    "505",
+    "506",
+    "507",
+    "508",
+    "510",
+    "511",
+    # Common ports
+    "20",
+    "21",
+    "22",
+    "23",
+    "25",
+    "53",
+    "67",
+    "68",
+    "69",
+    "80",
+    "110",
+    "111",
+    "123",
+    "135",
+    "137",
+    "138",
+    "139",
+    "143",
+    "161",
+    "162",
+    "389",
+    "443",
+    "445",
+    "465",
+    "587",
+    "636",
+    "993",
+    "995",
+    "1433",
+    "1521",
+    "2049",
+    "2375",
+    "2376",
+    "3306",
+    "3389",
+    "5432",
+    "5671",
+    "5672",
+    "5900",
+    "6379",
+    "8080",
+    "8081",
+    "8443",
+    "8883",
+    "9000",
+    "9200",
+    "9300",
+    "11211",
+    "1883",
+    "27017",
+}
+
+
 @dataclass(frozen=True)
 class HygienePattern:
     name: str
@@ -61,49 +180,45 @@ class HygieneConfig:
 
 def default_hygiene_config() -> HygieneConfig:
     typed_tokens = [
-        "<IPV4>",
-        "<PORT>",
-        "<IPV6>",
-        "<UUID>",
-        "<HEX>",
-        "<B64>",
-        "<TS>",
-        "<BLKID>",
-        "<PART>",
-        "<JOBID>",
-        "<ATTEMPT>",
-        "<TASK>",
-        "<INTZ>",
-        "<INT3>",
-        "<INT4>",
-        "<INT5P>",
+        "__IPV4__",
+        "__PORT__",
+        "__IPV6__",
+        "__UUID__",
+        "__HEX__",
+        "__B64__",
+        "__TS__",
+        "__BLKID__",
+        "__PART__",
+        "__JOBID__",
+        "__ATTEMPT__",
+        "__TASK__",
+        "__NUM3__",
+        "__NUM4__",
+        "__NUM5P__",
     ]
     patterns = [
-        HygienePattern("ipv4_port", r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b", "<IPV4>:<PORT>"),
-        HygienePattern("ipv4", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "<IPV4>"),
-        HygienePattern("ipv6", r"\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}\b", "<IPV6>"),
+        HygienePattern("ipv4_port", r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b", "__IPV4__:__PORT__"),
+        HygienePattern("ipv4", r"\b(?:\d{1,3}\.){3}\d{1,3}\b", "__IPV4__"),
+        HygienePattern("ipv6", r"\b(?:[0-9a-fA-F]{1,4}:){2,7}[0-9a-fA-F]{0,4}\b", "__IPV6__"),
         HygienePattern(
             "uuid",
             r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-5][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\b",
-            "<UUID>",
+            "__UUID__",
         ),
-        HygienePattern("hex", r"\b[0-9a-fA-F]{16,}\b", "<HEX>"),
-        HygienePattern("b64", r"\b[A-Za-z0-9+/]{24,}={0,2}\b", "<B64>"),
+        HygienePattern("hex", r"\b[0-9a-fA-F]{16,}\b", "__HEX__"),
+        HygienePattern("b64_urlsafe", r"\b[A-Za-z0-9_-]{24,}={0,2}\b", "__B64__"),
+        HygienePattern("b64_noslash", r"\b[A-Za-z0-9+]{24,}={0,2}\b", "__B64__"),
         HygienePattern(
             "iso_ts",
             r"\b\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}(?:\.\d+)?Z?\b",
-            "<TS>",
+            "__TS__",
         ),
-        HygienePattern("epoch_ts", r"\b\d{10}(?:\d{3})?\b", "<TS>"),
-        HygienePattern("blkid", r"\bblk_-?\d+\b", "<BLKID>"),
-        HygienePattern("part", r"/part-\d+\b", "/<PART>"),
-        HygienePattern("attempt", r"\battempt_\d+\b", "<ATTEMPT>"),
-        HygienePattern("task", r"\b_task_\d+\b", "<TASK>"),
-        HygienePattern("jobid", r"\b(?:job|container)_[A-Za-z0-9_]+(?:-\d+)?\b", "<JOBID>"),
-        HygienePattern("intz", r"\b0\d{2,}\b", "<INTZ>"),
-        HygienePattern("int3", r"\b\d{3}\b", "<INT3>"),
-        HygienePattern("int4", r"\b\d{4}\b", "<INT4>"),
-        HygienePattern("int5p", r"\b\d{5,}\b", "<INT5P>"),
+        HygienePattern("epoch_ts", r"\b\d{10}(?:\d{3})?\b", "__TS__"),
+        HygienePattern("blkid", r"\bblk_-?\d+\b", "__BLKID__"),
+        HygienePattern("part", r"/part-\d+\b", "/__PART__"),
+        HygienePattern("attempt", r"\battempt_\d+\b", "__ATTEMPT__"),
+        HygienePattern("task", r"\b_task_\d+\b", "__TASK__"),
+        HygienePattern("jobid", r"\b(?:job|container)_[A-Za-z0-9_]+(?:-\d+)?\b", "__JOBID__"),
     ]
     return HygieneConfig(enabled=True, typed_tokens=typed_tokens, patterns=patterns)
 
@@ -114,7 +229,24 @@ def apply_hygiene(text: str, cfg: HygieneConfig) -> str:
     out = text
     for p in cfg.patterns:
         out = p.compile().sub(p.replacement, out)
+    out = normalize_numbers(out)
     return out
+
+
+def normalize_numbers(text: str) -> str:
+    def repl(match: re.Match[str]) -> str:
+        s = match.group(0)
+        if s in ALLOWED_NUMBERS:
+            return s
+        if len(s) <= 2:
+            return s
+        if len(s) == 3:
+            return "__NUM3__"
+        if len(s) == 4:
+            return "__NUM4__"
+        return "__NUM5P__"
+
+    return re.sub(r"(?<!\d)\d+(?!\d)", repl, text)
 
 
 def is_value_fragment(token: str) -> bool:
@@ -122,7 +254,11 @@ def is_value_fragment(token: str) -> bool:
         return False
     if token.startswith("<") and token.endswith(">"):
         return False
-    if re.fullmatch(r"\d{4,}", token):
+    if token.startswith("__") and token.endswith("__"):
+        return False
+    if token.isdigit() and token in ALLOWED_NUMBERS:
+        return False
+    if re.fullmatch(r"\d{3,}", token):
         return True
     digits = sum(1 for c in token if c.isdigit())
     digit_ratio = digits / max(len(token), 1)
