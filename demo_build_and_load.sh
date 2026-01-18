@@ -1,39 +1,36 @@
 #!/usr/bin/env bash
-set -e
+set -euo pipefail
 
-# Demo: build from a tiny corpus and load via AutoTokenizer
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT="$ROOT/_demo_artifact_fast"
 
-DIR="$(cd "$(dirname "$0")" && pwd)"
-WORK="$DIR/_demo_artifact"
-CORPUS="$DIR/_demo_corpus.txt"
+python - <<'PY'
+from pathlib import Path
+p = Path("_demo_corpus.tsv")
+rows = [
+    (0, "GET /index.html?x=1&y=2"),
+    (1, "POST /login?user=admin&pass=123"),
+    (0, "GET /static/app.js"),
+]
+with p.open("w", encoding="utf-8") as f:
+    for y, x in rows:
+        f.write(f"{y}\t{x}\n")
+print("Wrote", p)
+PY
 
-cat > "$CORPUS" <<'EOF'
-GET /index.html?x=1&y=2
-POST /login?user=admin&pass=123
-GET /search?q=test&lang=en
-EOF
-
-python "$DIR/build_ctok_from_corpus.py" \
-  --corpus "$CORPUS" \
-  --format txt \
-  --outdir "$WORK" \
-  --vocab_size 2048 \
-  --max_len 10 \
-  --min_freq 1 \
-  --max_samples 100000 \
+python "$ROOT/build_ctok.py" \
+  --corpus "$ROOT/_demo_corpus.tsv" --format tsv \
+  --outdir "$OUT" \
+  --vocab_size 2048 --max_len 12 --min_freq 1 \
+  --semantic_mode mi --lambda_sem 10.0 --mi_top_k 5000 --mi_max_samples 1000 \
   --emit_code
 
 python - <<'PY'
 from transformers import AutoTokenizer
 
-# Load from local directory
-# NOTE: trust_remote_code=True is required for custom tokenization_ctok.py
-
-tok = AutoTokenizer.from_pretrained("./_demo_artifact", trust_remote_code=True)
-print("Tokenizer class:", type(tok))
+tok = AutoTokenizer.from_pretrained("./_demo_artifact_fast", trust_remote_code=True)
+print("Loaded:", type(tok))
 print(tok.tokenize("GET /index.html?x=1&y=2"))
-enc = tok("GET /index.html?x=1&y=2", padding="max_length", truncation=True, max_length=32)
-print({k: v[:16] for k, v in enc.items()})
+enc = tok("GET /index.html?x=1&y=2", truncation=True, padding="max_length", max_length=32)
+print(enc["input_ids"])
 PY
-
-echo "OK"
