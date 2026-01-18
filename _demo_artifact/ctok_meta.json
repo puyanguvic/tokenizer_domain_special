@@ -1,0 +1,25 @@
+{
+  "use_bytestr": true,
+  "tiebreak": "min_token_id",
+  "match_special_tokens": false,
+  "artifact_version": "ctok-v1",
+  "build": {
+    "vocab_size": 2048,
+    "max_len": 10,
+    "min_freq": 1,
+    "boundary_bytes": [
+      9,
+      10,
+      32,
+      34,
+      38,
+      39,
+      47,
+      58,
+      60,
+      61,
+      62,
+      63
+    ]
+  }
+}

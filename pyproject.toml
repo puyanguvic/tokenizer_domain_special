@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ctok-tokenizer"
+version = "0.1.0"
+description = "CTok tokenizer prototype and builder."
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = ["transformers>=4.30"]
+
+[project.optional-dependencies]
+parquet = ["pyarrow>=12.0", "pandas>=1.5"]
+
+[project.scripts]
+ctok-build = "build_ctok_from_corpus:main"
+
+[tool.setuptools]
+py-modules = ["build_ctok_from_corpus", "tokenization_ctok"]

@@ -1,0 +1,9 @@
+{
+  "tokenizer_class": "tokenization_ctok.CTokTokenizer",
+  "auto_map": {
+    "AutoTokenizer": "tokenization_ctok.CTokTokenizer"
+  },
+  "model_max_length": 512,
+  "padding_side": "right",
+  "truncation_side": "right"
+}
