@@ -1108,6 +1108,20 @@ def build_ctok_from_samples(
     num_workers = args.num_workers
     if num_workers <= 0:
         num_workers = max(1, mp.cpu_count() - 1)
+        _total_mem, avail_mem = _get_memory_info_bytes()
+        if avail_mem is not None:
+            avail_gb = avail_mem / (1024**3)
+            if avail_gb < 6:
+                cap = 4
+            elif avail_gb < 12:
+                cap = 8
+            elif avail_gb < 24:
+                cap = 16
+            else:
+                cap = None
+            if cap is not None and num_workers > cap:
+                print(f"Auto limiting workers to {cap} (avail_mem={avail_gb:.1f}GB)")
+                num_workers = cap
 
     hygiene_cfg = hygiene.default_hygiene_config()
     hygiene_cfg.enabled = not args.no_hygiene
@@ -1232,7 +1246,7 @@ def build_ctok_from_samples(
             texts=sample_texts,
             boundaries=boundaries,
             max_len=args.max_len,
-            min_freq=args.min_freq,
+            min_freq=1,
             allow_boundary_at_ends=allow_boundary_at_ends,
             max_chars_per_sample=args.max_chars_per_sample,
             num_workers=num_workers,
@@ -1246,8 +1260,13 @@ def build_ctok_from_samples(
                 if pre_cands[k] < pre_min:
                     del pre_cands[k]
         candidate_whitelist = set(pre_cands.keys())
-        candidate_prefixes = _build_prefixes(candidate_whitelist, boundaries)
-        print(f"Prefilter candidates kept: {len(candidate_whitelist)}")
+        if not candidate_whitelist:
+            print("Prefilter yielded no candidates; falling back to full collection")
+            candidate_whitelist = None
+            candidate_prefixes = None
+        else:
+            candidate_prefixes = _build_prefixes(candidate_whitelist, boundaries)
+            print(f"Prefilter candidates kept: {len(candidate_whitelist)}")
 
     cands = collect_candidates(
         texts=texts,
