@@ -266,12 +266,14 @@ def _collect_candidates_chunk(args: Tuple[List[object], Set[str], int, int, bool
 
 
 def _count_token_label_chunk(
-    args: Tuple[List[Tuple[str, str]], Set[str], int, bool, int, Set[str]]
+    args: Tuple[List[Tuple[Optional[str], str]], Set[str], int, bool, int, Set[str]]
 ) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
     chunk, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top = args
     local_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
     local_labels: Counter[str] = Counter()
     for y, x in chunk:
+        if y is None:
+            continue
         local_labels[y] += 1
         s = x[:max_chars_per_sample]
         n = len(s)
@@ -606,7 +608,7 @@ def filter_candidates(
 
 
 def build_token_label_counts(
-    labeled_samples: List[Tuple[str, str]],
+    labeled_samples: List[Tuple[Optional[str], str]],
     boundaries: Set[str],
     max_len: int,
     min_freq: int,
@@ -617,7 +619,7 @@ def build_token_label_counts(
     num_workers: int = 1,
 ) -> Tuple[Dict[str, int], Dict[str, Dict[str, int]]]:
     # Build candidate list first, then count token occurrences by label for top_k.
-    texts = [x for _, x in labeled_samples]
+    texts = [x for y, x in labeled_samples if y is not None]
     if candidates is None:
         candidates = collect_candidates(
             texts=texts,
@@ -630,12 +632,14 @@ def build_token_label_counts(
         )
     top = set([tok for tok, _ in candidates.most_common(semantic_top_k)])
 
-    label_counts: Dict[str, int] = Counter([y for y, _ in labeled_samples])
+    label_counts: Dict[str, int] = Counter([y for y, _ in labeled_samples if y is not None])
     token_label_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     total = len(labeled_samples) if hasattr(labeled_samples, "__len__") else None
     if num_workers <= 1 or total == 0:
         for y, x in _progress(labeled_samples, total=total, desc="Counting token-labels", unit="samples"):
+            if y is None:
+                continue
             # simple presence counting in each sample: count all occurrences (not just binary) for cheap signal
             s = x[:max_chars_per_sample]
             n = len(s)
@@ -917,14 +921,8 @@ def build_ctok_from_samples(
     token_label_counts: Dict[str, Dict[str, int]] = {}
 
     if args.semantic_mode == "mi" and label_key is not None:
-        labeled = [
-            (str(y), x)
-            for y, x in _progress(samples, total=len(samples), desc="Preparing labeled", unit="samples")
-            if y is not None
-        ]
-        if labeled:
-            label_counts, token_label_counts = build_token_label_counts(
-                labeled_samples=labeled,
+        label_counts, token_label_counts = build_token_label_counts(
+            labeled_samples=samples,
                 boundaries=boundaries,
                 max_len=args.max_len,
                 min_freq=args.min_freq,
@@ -933,9 +931,9 @@ def build_ctok_from_samples(
                 semantic_top_k=args.semantic_top_k,
                 candidates=cands_raw,
                 num_workers=num_workers,
-            )
-            if cands:
-                token_label_counts = {k: v for k, v in token_label_counts.items() if k in cands}
+        )
+        if cands:
+            token_label_counts = {k: v for k, v in token_label_counts.items() if k in cands}
 
     special = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
 
