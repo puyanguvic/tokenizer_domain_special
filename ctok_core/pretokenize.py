@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Dict, List, Pattern
+from typing import Dict, List, Optional, Pattern, Tuple
 
 
 @dataclass(frozen=True)
@@ -21,6 +21,14 @@ class PreTokenizerConfig:
     enabled: bool = True
     version: str = "pretokenize-v1"
     patterns: List[PreTokenizePattern] = field(default_factory=list)
+    _compiled: Optional[List[Tuple[Pattern[str], str]]] = field(default=None, init=False, repr=False)
+
+    def compiled_patterns(self) -> List[Tuple[Pattern[str], str]]:
+        """Compile regex patterns once and reuse across calls."""
+        if self._compiled is None:
+            self._compiled = [(p.compile(), p.replacement) for p in self.patterns]
+        return self._compiled
+
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -102,6 +110,6 @@ def apply_pretokenize(text: str, cfg: PreTokenizerConfig) -> str:
     if not cfg.enabled:
         return text
     out = text
-    for p in cfg.patterns:
-        out = p.compile().sub(p.replacement, out)
+    for pat, repl in cfg.compiled_patterns():
+        out = pat.sub(repl, out)
     return out
