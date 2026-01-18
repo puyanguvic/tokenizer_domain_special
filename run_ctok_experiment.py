@@ -39,12 +39,35 @@ def write_jsonl_corpus(
     label_key: str | None,
     max_samples: int | None,
     preview_count: int,
+    num_proc: int,
 ) -> Tuple[List[str], int, int, List[str]]:
     out_path.parent.mkdir(parents=True, exist_ok=True)
     previews: List[str] = []
     first_keys: List[str] = []
     missing_text = 0
     n = 0
+    if hasattr(dataset, "to_json") and num_proc > 1:
+        cols = [text_key] + ([label_key] if label_key else [])
+        if hasattr(dataset, "column_names") and text_key not in dataset.column_names:
+            raise SystemExit(f"text_key='{text_key}' not found in dataset columns: {dataset.column_names}")
+        if label_key and hasattr(dataset, "column_names") and label_key not in dataset.column_names:
+            label_key = None
+            cols = [text_key]
+        if max_samples is not None and hasattr(dataset, "__len__"):
+            total = len(dataset)
+            keep = min(total, max_samples)
+            if keep < total:
+                dataset = dataset.select(range(keep))
+        if preview_count > 0 and hasattr(dataset, "__len__"):
+            for row in dataset.select(range(min(preview_count, len(dataset)))):
+                previews.append(str(row[text_key]))
+        print(f"Writing corpus via datasets.to_json with num_proc={num_proc}")
+        dataset.select_columns(cols).to_json(str(out_path), num_proc=num_proc)
+        n = len(dataset) if hasattr(dataset, "__len__") else 0
+        print(f"Wrote {n} samples to {out_path}")
+        if hasattr(dataset, "column_names"):
+            first_keys = list(dataset.column_names)
+        return previews, n, missing_text, first_keys
     try:
         from tqdm import tqdm
     except Exception:
@@ -101,6 +124,7 @@ def build_ctok_artifact(
     if not build_script.exists():
         raise FileNotFoundError(f"Missing builder: {build_script}")
 
+    max_samples_str = "0" if args.max_samples <= 0 else str(args.max_samples)
     cmd = [
         sys.executable,
         str(build_script),
@@ -121,7 +145,7 @@ def build_ctok_artifact(
         "--min_freq",
         str(args.min_freq),
         "--max_samples",
-        str(args.max_samples),
+        max_samples_str,
         "--semantic_mode",
         args.semantic_mode,
         "--lambda_sem",
@@ -136,6 +160,8 @@ def build_ctok_artifact(
         str(args.max_doc_concentration),
         "--junk_penalty_beta",
         str(args.junk_penalty_beta),
+        "--num_workers",
+        str(args.num_workers),
     ]
     if args.use_ascii_base:
         cmd.append("--use_ascii_base")
@@ -181,6 +207,19 @@ def run(args: argparse.Namespace) -> None:
     print(f"Tokenizer outdir: {outdir}")
     print(f"Using text_key='{text_key}' label_key='{label_key or ''}'")
 
+    max_samples = None if args.max_samples <= 0 else args.max_samples
+    if max_samples is None:
+        print("max_samples disabled (using full split)")
+
+    corpus_num_proc = args.corpus_num_proc
+    if corpus_num_proc <= 0:
+        try:
+            import multiprocessing as _mp
+
+            corpus_num_proc = max(1, _mp.cpu_count() - 1)
+        except Exception:
+            corpus_num_proc = 1
+
     if not args.streaming and args.sample_ratio < 1.0:
         total = len(dataset)
         keep = max(1, int(total * args.sample_ratio))
@@ -191,6 +230,8 @@ def run(args: argparse.Namespace) -> None:
 
     if corpus_out.exists() and not args.force_corpus:
         print(f"Reusing existing corpus: {corpus_out}")
+        if args.sample_ratio >= 1.0 and max_samples is None:
+            print("Warning: existing corpus may be a subsample. Use --force_corpus to rebuild full corpus.")
         previews = []
         kept = 1
         first_keys = []
@@ -200,8 +241,9 @@ def run(args: argparse.Namespace) -> None:
             corpus_out,
             text_key=text_key,
             label_key=label_key,
-            max_samples=args.max_samples,
+            max_samples=max_samples,
             preview_count=args.preview,
+            num_proc=corpus_num_proc,
         )
     if kept == 0:
         msg = f"No samples written; text_key='{text_key}' not found or empty."
@@ -255,13 +297,15 @@ def main() -> None:
     ap.add_argument("--tokenizer_name", default="", help="Tokenizer folder name under tokenizers/")
     ap.add_argument("--tokenizer_root", default="tokenizers")
     ap.add_argument("--corpus_out", default="", help="Where to write jsonl corpus (default: datasets/corpus/<tokenizer_name>.jsonl)")
-    ap.add_argument("--max_samples", type=int, default=200000)
+    ap.add_argument("--max_samples", type=int, default=0)
+    ap.add_argument("--num_workers", type=int, default=0)
     ap.add_argument("--streaming", action="store_true")
     ap.add_argument("--preview", type=int, default=3, help="Show tokenization previews after build")
-    ap.add_argument("--sample_ratio", type=float, default=0.1, help="Use only a fraction of the split (0-1]")
+    ap.add_argument("--sample_ratio", type=float, default=1.0, help="Use only a fraction of the split (0-1]")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--cache_dir", default="datasets/hf_cache")
     ap.add_argument("--force_corpus", action="store_true")
+    ap.add_argument("--corpus_num_proc", type=int, default=0, help="Parallel writers (0=auto)")
     ap.add_argument("--no_hygiene", action="store_true")
     ap.add_argument("--no_filter_value_fragments", action="store_true")
     ap.add_argument("--min_doc_freq", type=int, default=1)

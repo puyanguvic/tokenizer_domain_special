@@ -7,13 +7,15 @@ tokenizer_name: ""
 tokenizer_root: tokenizers
 outdir: ""
 corpus_out: ""
-max_samples: 200000
+max_samples: 0
+num_workers: 0
 streaming: false
 preview: 3
-sample_ratio: 0.1
+sample_ratio: 1.0
 seed: 42
 cache_dir: datasets/hf_cache
 force_corpus: false
+corpus_num_proc: 0
 no_hygiene: false
 no_filter_value_fragments: false
 min_doc_freq: 1

@@ -118,7 +118,7 @@ def collect_base_chars(
 ) -> Set[str]:
     chars: Set[str] = set()
     if add_ascii:
-        chars.update(chr(i) for i in range(128))
+        chars.update(hygiene.ascii_base_chars())
     if extra_tokens:
         chars.update(extra_tokens)
     for _, x in pairs:
@@ -344,11 +344,14 @@ def filter_candidates(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     filter_value_fragments: bool,
+    typed_tokens: Sequence[str],
     min_doc_freq: int,
     max_doc_concentration: float,
 ) -> Counter[str]:
     filtered = Counter()
     for tok, cnt in candidates.items():
+        if hygiene.is_typed_token_fragment(tok, typed_tokens):
+            continue
         if filter_value_fragments and hygiene.is_value_fragment(tok):
             continue
         filtered[tok] = cnt
@@ -490,7 +493,7 @@ def main():
     ap.add_argument("--vocab_size", type=int, default=8192)
     ap.add_argument("--max_len", type=int, default=12)
     ap.add_argument("--min_freq", type=int, default=50)
-    ap.add_argument("--max_samples", type=int, default=200000)
+    ap.add_argument("--max_samples", type=int, default=0)
     ap.add_argument("--max_chars_per_sample", type=int, default=4096)
     ap.add_argument("--boundaries", type=str, default="=&?:/\\n\\t <>\\\"'", help="boundary chars (supports escapes)")
     ap.add_argument("--no_boundary_ends", action="store_true")
@@ -511,6 +514,9 @@ def main():
     ap.add_argument("--junk_penalty_beta", type=float, default=0.0)
 
     args = ap.parse_args()
+
+    if args.max_samples is not None and args.max_samples <= 0:
+        args.max_samples = None
 
     boundaries = parse_escaped_chars(args.boundaries)
 
@@ -567,6 +573,7 @@ def main():
         allow_boundary_at_ends=not args.no_boundary_ends,
         max_chars_per_sample=args.max_chars_per_sample,
         filter_value_fragments=not args.no_filter_value_fragments,
+        typed_tokens=hygiene_cfg.typed_tokens,
         min_doc_freq=args.min_doc_freq,
         max_doc_concentration=args.max_doc_concentration,
     )

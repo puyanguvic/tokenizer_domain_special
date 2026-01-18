@@ -7,6 +7,8 @@ import os
 import random
 import shutil
 from collections import Counter, defaultdict
+import multiprocessing as mp
+import sys
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Set, Tuple
 
@@ -133,8 +135,7 @@ def collect_base_chars(
 ) -> Set[str]:
     chars: Set[str] = set()
     if use_ascii_base:
-        for i in range(128):
-            chars.add(chr(i))
+        chars |= hygiene.ascii_base_chars()
     chars |= boundaries
     if extra_tokens:
         chars.update(extra_tokens)
@@ -146,20 +147,10 @@ def collect_base_chars(
     return chars
 
 
-def collect_candidates(
-    texts: Iterable[str],
-    boundaries: Set[str],
-    max_len: int,
-    min_freq: int,
-    allow_boundary_at_ends: bool,
-    max_chars_per_sample: int,
-) -> Counter[str]:
+def _collect_candidates_chunk(args: Tuple[List[str], Set[str], int, int, bool, int]) -> Counter[str]:
+    texts, boundaries, max_len, min_freq, allow_boundary_at_ends, max_chars_per_sample = args
     cnt: Counter[str] = Counter()
-    total = len(texts) if hasattr(texts, "__len__") else None
-    iterator = texts
-    if _tqdm is not None:
-        iterator = _tqdm(texts, total=total, desc="Collecting candidates", unit="samples")
-    for text in iterator:
+    for text in texts:
         s = text[:max_chars_per_sample]
         n = len(s)
         i = 0
@@ -179,6 +170,96 @@ def collect_candidates(
                     if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
                         cnt[s[i - 1] + cur] += 1
             i += 1
+    return cnt
+
+
+def _count_token_label_chunk(
+    args: Tuple[List[Tuple[str, str]], Set[str], int, bool, int, Set[str]]
+) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
+    chunk, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top = args
+    local_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    local_labels: Counter[str] = Counter()
+    for y, x in chunk:
+        local_labels[y] += 1
+        s = x[:max_chars_per_sample]
+        n = len(s)
+        i = 0
+        while i < n:
+            if s[i] in boundaries:
+                i += 1
+                continue
+            j = i
+            while j < n and (j - i) < max_len and s[j] not in boundaries:
+                j += 1
+                cur = s[i:j]
+                if len(cur) >= 2 and cur in top:
+                    local_counts[cur][y] += 1
+                if allow_boundary_at_ends:
+                    if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
+                        t = cur + s[j]
+                        if t in top:
+                            local_counts[t][y] += 1
+                    if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
+                        t = s[i - 1] + cur
+                        if t in top:
+                            local_counts[t][y] += 1
+            i += 1
+    return local_labels, local_counts
+
+
+def collect_candidates(
+    texts: Iterable[str],
+    boundaries: Set[str],
+    max_len: int,
+    min_freq: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+    num_workers: int = 1,
+) -> Counter[str]:
+    cnt: Counter[str] = Counter()
+    text_list = list(texts)
+    total = len(text_list)
+    if num_workers <= 1 or total == 0:
+        iterator = text_list
+        if _tqdm is not None:
+            iterator = _tqdm(text_list, total=total, desc="Collecting candidates", unit="samples")
+        for text in iterator:
+            s = text[:max_chars_per_sample]
+            n = len(s)
+            i = 0
+            while i < n:
+                if s[i] in boundaries:
+                    i += 1
+                    continue
+                j = i
+                while j < n and (j - i) < max_len and s[j] not in boundaries:
+                    j += 1
+                    cur = s[i:j]
+                    if len(cur) >= 2:
+                        cnt[cur] += 1
+                    if allow_boundary_at_ends:
+                        if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
+                            cnt[cur + s[j]] += 1
+                        if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
+                            cnt[s[i - 1] + cur] += 1
+                i += 1
+    else:
+        print(f"Collecting candidates with {num_workers} workers")
+        chunk_size = max(1, total // (num_workers * 4))
+        chunks = [text_list[i : i + chunk_size] for i in range(0, total, chunk_size)]
+        args_list = [(c, boundaries, max_len, min_freq, allow_boundary_at_ends, max_chars_per_sample) for c in chunks]
+        with mp.Pool(processes=num_workers) as pool:
+            results_iter = pool.imap_unordered(_collect_candidates_chunk, args_list, chunksize=1)
+            if _tqdm is not None:
+                results_iter = _tqdm(
+                    results_iter,
+                    total=len(args_list),
+                    desc="Collecting candidates (mp)",
+                    unit="chunks",
+                    file=sys.stdout,
+                )
+            for c in results_iter:
+                cnt.update(c)
     # filter
     for k in list(cnt.keys()):
         if cnt[k] < min_freq:
@@ -329,11 +410,14 @@ def filter_candidates(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     filter_value_fragments: bool,
+    typed_tokens: Sequence[str],
     min_doc_freq: int,
     max_doc_concentration: float,
 ) -> Counter[str]:
     filtered = Counter()
     for tok, cnt in candidates.items():
+        if hygiene.is_typed_token_fragment(tok, typed_tokens):
+            continue
         if filter_value_fragments and hygiene.is_value_fragment(tok):
             continue
         filtered[tok] = cnt
@@ -369,6 +453,7 @@ def build_token_label_counts(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     semantic_top_k: int,
+    num_workers: int = 1,
 ) -> Tuple[Dict[str, int], Dict[str, Dict[str, int]]]:
     # Build candidate list first, then count token occurrences by label for top_k.
     texts = [x for _, x in labeled_samples]
@@ -379,34 +464,57 @@ def build_token_label_counts(
     token_label_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
 
     total = len(labeled_samples) if hasattr(labeled_samples, "__len__") else None
-    iterator = labeled_samples
-    if _tqdm is not None:
-        iterator = _tqdm(labeled_samples, total=total, desc="Counting token-labels", unit="samples")
-    for y, x in iterator:
-        # simple presence counting in each sample: count all occurrences (not just binary) for cheap signal
-        s = x[:max_chars_per_sample]
-        n = len(s)
-        i = 0
-        while i < n:
-            if s[i] in boundaries:
+    if num_workers <= 1 or total == 0:
+        iterator = labeled_samples
+        if _tqdm is not None:
+            iterator = _tqdm(labeled_samples, total=total, desc="Counting token-labels", unit="samples")
+        for y, x in iterator:
+            # simple presence counting in each sample: count all occurrences (not just binary) for cheap signal
+            s = x[:max_chars_per_sample]
+            n = len(s)
+            i = 0
+            while i < n:
+                if s[i] in boundaries:
+                    i += 1
+                    continue
+                j = i
+                while j < n and (j - i) < max_len and s[j] not in boundaries:
+                    j += 1
+                    cur = s[i:j]
+                    if len(cur) >= 2 and cur in top:
+                        token_label_counts[cur][y] += 1
+                    if allow_boundary_at_ends:
+                        if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
+                            t = cur + s[j]
+                            if t in top:
+                                token_label_counts[t][y] += 1
+                        if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
+                            t = s[i - 1] + cur
+                            if t in top:
+                                token_label_counts[t][y] += 1
                 i += 1
-                continue
-            j = i
-            while j < n and (j - i) < max_len and s[j] not in boundaries:
-                j += 1
-                cur = s[i:j]
-                if len(cur) >= 2 and cur in top:
-                    token_label_counts[cur][y] += 1
-                if allow_boundary_at_ends:
-                    if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
-                        t = cur + s[j]
-                        if t in top:
-                            token_label_counts[t][y] += 1
-                    if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
-                        t = s[i - 1] + cur
-                        if t in top:
-                            token_label_counts[t][y] += 1
-            i += 1
+    else:
+        print(f"Counting token-labels with {num_workers} workers")
+        chunk_size = max(1, total // (num_workers * 4))
+        chunks = [labeled_samples[i : i + chunk_size] for i in range(0, total, chunk_size)]
+        args_list = [(c, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top) for c in chunks]
+        with mp.Pool(processes=num_workers) as pool:
+            results_iter = pool.imap_unordered(_count_token_label_chunk, args_list, chunksize=1)
+            if _tqdm is not None:
+                results_iter = _tqdm(
+                    results_iter,
+                    total=len(args_list),
+                    desc="Counting token-labels (mp)",
+                    unit="chunks",
+                    file=sys.stdout,
+                )
+            label_counts = Counter()
+            token_label_counts = defaultdict(lambda: defaultdict(int))
+            for local_labels, local_counts in results_iter:
+                label_counts.update(local_labels)
+                for tok, lab_map in local_counts.items():
+                    for y, c in lab_map.items():
+                        token_label_counts[tok][y] += c
 
     return dict(label_counts), {k: dict(v) for k, v in token_label_counts.items()}
 
@@ -542,13 +650,14 @@ def main() -> None:
     ap.add_argument("--vocab_size", type=int, default=8192)
     ap.add_argument("--max_len", type=int, default=12)
     ap.add_argument("--min_freq", type=int, default=50)
-    ap.add_argument("--max_samples", type=int, default=200000)
+    ap.add_argument("--max_samples", type=int, default=0)
     ap.add_argument("--max_chars_per_sample", type=int, default=4096)
     ap.add_argument("--boundaries", type=str, default="=&?:/\\n\\t <>\\\"'", help="Boundary characters (supports escapes)")
     ap.add_argument("--no_boundary_ends", action="store_true")
 
     ap.add_argument("--use_ascii_base", action="store_true", help="Include ASCII chars (0..127) in base vocab")
     ap.add_argument("--max_base_chars", type=int, default=4096)
+    ap.add_argument("--num_workers", type=int, default=0, help="Parallel workers (0=auto)")
 
     ap.add_argument("--semantic_mode", choices=["none", "mi"], default="none")
     ap.add_argument("--lambda_sem", type=float, default=0.0)
@@ -563,6 +672,9 @@ def main() -> None:
     ap.add_argument("--emit_code", action="store_true")
 
     args = ap.parse_args()
+
+    if args.max_samples is not None and args.max_samples <= 0:
+        args.max_samples = None
 
     boundaries = parse_boundaries(args.boundaries)
     label_key = args.label_key if args.label_key else None
@@ -594,6 +706,10 @@ def main() -> None:
     allow_boundary_at_ends = not args.no_boundary_ends
 
     # candidates (frequency)
+    num_workers = args.num_workers
+    if num_workers <= 0:
+        num_workers = max(1, mp.cpu_count() - 1)
+
     cands = collect_candidates(
         texts=texts,
         boundaries=boundaries,
@@ -601,6 +717,7 @@ def main() -> None:
         min_freq=args.min_freq,
         allow_boundary_at_ends=allow_boundary_at_ends,
         max_chars_per_sample=args.max_chars_per_sample,
+        num_workers=num_workers,
     )
     cands = filter_candidates(
         candidates=cands,
@@ -610,6 +727,7 @@ def main() -> None:
         allow_boundary_at_ends=allow_boundary_at_ends,
         max_chars_per_sample=args.max_chars_per_sample,
         filter_value_fragments=not args.no_filter_value_fragments,
+        typed_tokens=hygiene_cfg.typed_tokens,
         min_doc_freq=args.min_doc_freq,
         max_doc_concentration=args.max_doc_concentration,
     )
@@ -628,6 +746,7 @@ def main() -> None:
                 allow_boundary_at_ends=allow_boundary_at_ends,
                 max_chars_per_sample=args.max_chars_per_sample,
                 semantic_top_k=args.semantic_top_k,
+                num_workers=num_workers,
             )
             if cands:
                 token_label_counts = {k: v for k, v in token_label_counts.items() if k in cands}

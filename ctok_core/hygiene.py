@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Optional, Pattern
+from typing import Dict, Iterable, List, Optional, Pattern, Set
 
 
 @dataclass(frozen=True)
@@ -71,6 +71,12 @@ def default_hygiene_config() -> HygieneConfig:
         "<BLKID>",
         "<PART>",
         "<JOBID>",
+        "<ATTEMPT>",
+        "<TASK>",
+        "<INTZ>",
+        "<INT3>",
+        "<INT4>",
+        "<INT5P>",
     ]
     patterns = [
         HygienePattern("ipv4_port", r"\b(?:\d{1,3}\.){3}\d{1,3}:\d{1,5}\b", "<IPV4>:<PORT>"),
@@ -91,7 +97,13 @@ def default_hygiene_config() -> HygieneConfig:
         HygienePattern("epoch_ts", r"\b\d{10}(?:\d{3})?\b", "<TS>"),
         HygienePattern("blkid", r"\bblk_-?\d+\b", "<BLKID>"),
         HygienePattern("part", r"/part-\d+\b", "/<PART>"),
-        HygienePattern("jobid", r"\b(?:job|attempt|container)_[A-Za-z0-9_]+(?:-\d+)?\b", "<JOBID>"),
+        HygienePattern("attempt", r"\battempt_\d+\b", "<ATTEMPT>"),
+        HygienePattern("task", r"\b_task_\d+\b", "<TASK>"),
+        HygienePattern("jobid", r"\b(?:job|container)_[A-Za-z0-9_]+(?:-\d+)?\b", "<JOBID>"),
+        HygienePattern("intz", r"\b0\d{2,}\b", "<INTZ>"),
+        HygienePattern("int3", r"\b\d{3}\b", "<INT3>"),
+        HygienePattern("int4", r"\b\d{4}\b", "<INT4>"),
+        HygienePattern("int5p", r"\b\d{5,}\b", "<INT5P>"),
     ]
     return HygieneConfig(enabled=True, typed_tokens=typed_tokens, patterns=patterns)
 
@@ -123,6 +135,20 @@ def is_value_fragment(token: str) -> bool:
     return False
 
 
+def is_typed_token_fragment(token: str, typed_tokens: Iterable[str]) -> bool:
+    if not token:
+        return False
+    typed = list(typed_tokens)
+    if token in typed:
+        return False
+    if "<" in token or ">" in token:
+        return True
+    for t in typed:
+        if token in t and token != t:
+            return True
+    return False
+
+
 def junk_score(token: str) -> float:
     if not token:
         return 0.0
@@ -144,3 +170,11 @@ def vocab_hygiene_metrics(tokens: Iterable[str], typed_tokens: Iterable[str]) ->
         "vocab_typed_frac": typed_cnt / total,
     }
 
+
+def ascii_base_chars() -> Set[str]:
+    chars: Set[str] = set()
+    for i in range(0x20, 0x7F):
+        chars.add(chr(i))
+    for ch in ["\t", "\n", "\r"]:
+        chars.add(ch)
+    return chars

@@ -7,7 +7,29 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from transformers import PreTrainedTokenizer
 
-import hygiene
+def _import_hygiene():
+    try:
+        import hygiene  # type: ignore
+
+        return hygiene
+    except ImportError:
+        import importlib.util
+        import sys
+
+        here = os.path.dirname(__file__)
+        path = os.path.join(here, "hygiene.py")
+        if not os.path.exists(path):
+            raise
+        spec = importlib.util.spec_from_file_location("ctok_hygiene", path)
+        if spec is None or spec.loader is None:
+            raise
+        module = importlib.util.module_from_spec(spec)
+        sys.modules["ctok_hygiene"] = module
+        spec.loader.exec_module(module)
+        return module
+
+
+hygiene = _import_hygiene()
 
 
 @dataclass

@@ -61,3 +61,12 @@ def test_runtime_equals_build_pipeline():
         tokens = tok.tokenize(text)
         assert "<IPV4>" in tokens
         assert "<PORT>" in tokens
+
+
+def test_typed_token_fragment_filter():
+    hygiene, _ = _load_modules()
+    typed = hygiene.default_hygiene_config().typed_tokens
+    assert hygiene.is_typed_token_fragment("<IPV4", typed)
+    assert hygiene.is_typed_token_fragment("IPV4>", typed)
+    assert hygiene.is_typed_token_fragment("IPV4", typed)
+    assert not hygiene.is_typed_token_fragment("<IPV4>", typed)

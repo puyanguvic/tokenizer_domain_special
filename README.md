@@ -59,6 +59,7 @@ python run_ctok_experiment.py \
   --lambda_sem 50.0 \
   --use_ascii_base \
   --emit_code
+If a corpus already exists and you want a full rebuild, add `--force_corpus`.
 ```
 
 Experiment 2: fine-tune a classifier using a CTok tokenizer with a BERT model
