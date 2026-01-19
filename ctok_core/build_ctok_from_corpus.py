@@ -302,6 +302,31 @@ def _build_or_load_cache(
     return cache_path
 
 
+def _build_or_load_cache_from_samples(
+    *,
+    outdir: str,
+    samples: Sequence[Tuple[Optional[str], str]],
+    max_samples: Optional[int],
+    lowercase: bool,
+    hygiene_cfg: hygiene.HygieneConfig,
+    pretok_cfg: pretokenize.PreTokenizerConfig,
+    locked: _Locked,
+) -> str:
+    os.makedirs(outdir, exist_ok=True)
+    cache_path = os.path.join(outdir, locked.cache_name)
+    if os.path.exists(cache_path) and os.path.getsize(cache_path) > 0:
+        return cache_path
+
+    limit = len(samples) if max_samples is None else min(len(samples), max_samples)
+    with gzip.open(cache_path, "wt", encoding="utf-8") as f:
+        iterator = samples[:limit]
+        for y, x in _progress(iterator, total=limit, desc="Preprocessing samples", unit="samples"):
+            px = _apply_pipeline(x, lowercase, hygiene_cfg, pretok_cfg)
+            rec = {"y": y, "x": px}
+            f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    return cache_path
+
+
 def _iter_cache(cache_path: str) -> Iterator[Tuple[Optional[str], str]]:
     with gzip.open(cache_path, "rt", encoding="utf-8", errors="replace") as f:
         for line in f:
@@ -826,6 +851,105 @@ def build_ctok_unigram_from_corpus(
     # Helpful summary
     print(f"Wrote CTok artifact to: {outdir}")
     print(f"Vocab size: {len(token_to_id)} (requested {vocab_size})")
+    print(f"Cache: {cache_path} ({os.path.getsize(cache_path)/1024/1024:.1f} MB)")
+
+
+def build_ctok_from_samples(
+    *,
+    samples: Sequence[Tuple[Optional[str], str]],
+    text_key: str,
+    label_key: Optional[str],
+    outdir: str,
+    args: argparse.Namespace,
+) -> None:
+    locked = _Locked()
+    random.seed(locked.rng_seed)
+
+    boundaries = parse_boundaries(getattr(args, "boundaries", "=&?:/\\n\\t <>\\\"'"))
+    boundaries |= {" ", "\t", "\n", "\r"}
+
+    hygiene_cfg = hygiene.default_hygiene_config()
+    hygiene_cfg.enabled = not bool(getattr(args, "no_hygiene", False))
+    if not hygiene_cfg.enabled:
+        hygiene_cfg.typed_tokens = []
+        hygiene_cfg.patterns = []
+
+    pretok_cfg = pretokenize.default_pretokenizer_config()
+    pretok_cfg.enabled = str(getattr(args, "pretokenizer", "none")) != "none"
+    if not pretok_cfg.enabled:
+        pretok_cfg.patterns = []
+
+    max_samples = getattr(args, "max_samples", 0)
+    max_samples = None if max_samples is None or max_samples <= 0 else int(max_samples)
+
+    cache_path = _build_or_load_cache_from_samples(
+        outdir=outdir,
+        samples=samples,
+        max_samples=max_samples,
+        lowercase=bool(getattr(args, "lowercase", False)),
+        hygiene_cfg=hygiene_cfg,
+        pretok_cfg=pretok_cfg,
+        locked=locked,
+    )
+
+    top_words, sample_words, observed_chars = _collect_top_words_and_samples(
+        cache_path,
+        boundaries=boundaries,
+        typed_tokens=hygiene_cfg.typed_tokens,
+        max_len=int(getattr(args, "max_len", 12)),
+        locked=locked,
+    )
+    subwords = _derive_subwords_from_words(
+        top_words,
+        boundaries=boundaries,
+        typed_tokens=hygiene_cfg.typed_tokens,
+        max_len=int(getattr(args, "max_len", 12)),
+        vocab_size=int(getattr(args, "vocab_size", 8192)),
+        locked=locked,
+    )
+
+    special = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+    required: List[str] = []
+    required.extend(sorted(hygiene_cfg.typed_tokens))
+    required.extend(sorted(observed_chars))
+    required.extend(sorted(boundaries))
+
+    final_tokens = _prune_and_score_subwords(
+        subwords=subwords,
+        sample_words=sample_words,
+        special=special,
+        required=required,
+        vocab_size=int(getattr(args, "vocab_size", 8192)),
+        boundaries=boundaries,
+        locked=locked,
+    )
+
+    ordered: List[str] = []
+    for t in special:
+        if t in final_tokens and t not in ordered:
+            ordered.append(t)
+    for t in final_tokens:
+        if t not in ordered:
+            ordered.append(t)
+
+    token_to_id = {t: i for i, t in enumerate(ordered)}
+    write_artifact(
+        outdir=outdir,
+        token_to_id=token_to_id,
+        boundaries=boundaries,
+        vocab_size_requested=int(getattr(args, "vocab_size", 8192)),
+        max_len=int(getattr(args, "max_len", 12)),
+        fmt=str(getattr(args, "format", "samples")),
+        text_key=text_key,
+        label_key=label_key,
+        model_max_length=int(getattr(args, "model_max_length", 512)),
+        lowercase=bool(getattr(args, "lowercase", False)),
+        hygiene_cfg=hygiene_cfg,
+        pretok_cfg=pretok_cfg,
+    )
+
+    print(f"Wrote CTok artifact to: {outdir}")
+    print(f"Vocab size: {len(token_to_id)} (requested {getattr(args, 'vocab_size', 8192)})")
     print(f"Cache: {cache_path} ({os.path.getsize(cache_path)/1024/1024:.1f} MB)")
 
 
