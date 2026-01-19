@@ -3,7 +3,6 @@ from __future__ import annotations
 import argparse
 import json
 import math
-import heapq
 import os
 import random
 import shutil
@@ -195,14 +194,56 @@ def _select_prefilter_indices(total: int, max_samples: int) -> List[int]:
     return idxs[:max_samples]
 
 
-def _build_prefixes(tokens: Iterable[str], boundaries: Set[str]) -> Set[str]:
-    prefixes: Set[str] = set()
+class PrefixTrie:
+    """Memory-friendly prefix index used for whitelist prefix pruning.
+
+    We only need to answer: "is this string a prefix of any whitelisted token?"
+    A trie stores shared prefixes once, while a flat prefix-set can explode.
+    """
+
+    __slots__ = ("root",)
+
+    def __init__(self) -> None:
+        self.root: Dict[str, Dict] = {}
+
+    def add(self, token: str) -> None:
+        node = self.root
+        for ch in token:
+            node = node.setdefault(ch, {})  # type: ignore[assignment]
+
+    def has_prefix(self, prefix: str) -> bool:
+        node: Dict = self.root
+        for ch in prefix:
+            nxt = node.get(ch)
+            if nxt is None:
+                return False
+            node = nxt
+        return True
+
+
+def _build_prefixes(tokens: Iterable[str], boundaries: Set[str]) -> PrefixTrie:
+    trie = PrefixTrie()
     for tok in tokens:
+        if not tok:
+            continue
         if any(ch in boundaries for ch in tok):
             continue
-        for i in range(1, len(tok) + 1):
-            prefixes.add(tok[:i])
-    return prefixes
+        trie.add(tok)
+    return trie
+
+
+def _prefix_allows(prefixes: Optional[object], s: str) -> bool:
+    if prefixes is None:
+        return True
+    # PrefixTrie path
+    hp = getattr(prefixes, "has_prefix", None)
+    if callable(hp):
+        return bool(hp(s))
+    # Fallback: treat as set-like
+    try:
+        return s in prefixes  # type: ignore[operator]
+    except Exception:
+        return True
 
 
 def _get_memory_info_bytes() -> Tuple[Optional[int], Optional[int]]:
@@ -235,19 +276,7 @@ _GLOBAL_MAX_LEN: Optional[int] = None
 _GLOBAL_ALLOW_BOUNDARY_AT_ENDS: Optional[bool] = None
 _GLOBAL_MAX_CHARS_PER_SAMPLE: Optional[int] = None
 _GLOBAL_CANDIDATE_WHITELIST: Optional[Set[str]] = None
-_GLOBAL_CANDIDATE_PREFIXES: Optional[Set[str]] = None
-
-
-def _clear_candidates_globals() -> None:
-    global _GLOBAL_TEXTS, _GLOBAL_BOUNDARIES, _GLOBAL_MAX_LEN, _GLOBAL_ALLOW_BOUNDARY_AT_ENDS, _GLOBAL_MAX_CHARS_PER_SAMPLE
-    global _GLOBAL_CANDIDATE_WHITELIST, _GLOBAL_CANDIDATE_PREFIXES
-    _GLOBAL_TEXTS = None
-    _GLOBAL_BOUNDARIES = None
-    _GLOBAL_MAX_LEN = None
-    _GLOBAL_ALLOW_BOUNDARY_AT_ENDS = None
-    _GLOBAL_MAX_CHARS_PER_SAMPLE = None
-    _GLOBAL_CANDIDATE_WHITELIST = None
-    _GLOBAL_CANDIDATE_PREFIXES = None
+_GLOBAL_CANDIDATE_PREFIXES: Optional[object] = None
 
 
 def _init_candidates_globals(
@@ -257,7 +286,7 @@ def _init_candidates_globals(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     whitelist: Optional[Set[str]] = None,
-    prefixes: Optional[Set[str]] = None,
+    prefixes: Optional[object] = None,
 ) -> None:
     global _GLOBAL_TEXTS, _GLOBAL_BOUNDARIES, _GLOBAL_MAX_LEN, _GLOBAL_ALLOW_BOUNDARY_AT_ENDS, _GLOBAL_MAX_CHARS_PER_SAMPLE
     global _GLOBAL_CANDIDATE_WHITELIST, _GLOBAL_CANDIDATE_PREFIXES
@@ -268,6 +297,19 @@ def _init_candidates_globals(
     _GLOBAL_MAX_CHARS_PER_SAMPLE = max_chars_per_sample
     _GLOBAL_CANDIDATE_WHITELIST = whitelist
     _GLOBAL_CANDIDATE_PREFIXES = prefixes
+
+
+def _clear_candidates_globals() -> None:
+    """Release large process-local references after mp candidate collection."""
+    global _GLOBAL_TEXTS, _GLOBAL_BOUNDARIES, _GLOBAL_MAX_LEN, _GLOBAL_ALLOW_BOUNDARY_AT_ENDS
+    global _GLOBAL_MAX_CHARS_PER_SAMPLE, _GLOBAL_CANDIDATE_WHITELIST, _GLOBAL_CANDIDATE_PREFIXES
+    _GLOBAL_TEXTS = None
+    _GLOBAL_BOUNDARIES = None
+    _GLOBAL_MAX_LEN = None
+    _GLOBAL_ALLOW_BOUNDARY_AT_ENDS = None
+    _GLOBAL_MAX_CHARS_PER_SAMPLE = None
+    _GLOBAL_CANDIDATE_WHITELIST = None
+    _GLOBAL_CANDIDATE_PREFIXES = None
 
 
 def _collect_candidates_chunk_idxs(idxs: Iterable[int]) -> Counter[str]:
@@ -294,7 +336,7 @@ def _collect_candidates_chunk_idxs(idxs: Iterable[int]) -> Counter[str]:
             cur = ""
             while j < n and (j - i) < max_len and s[j] not in boundaries:
                 nxt = cur + s[j]
-                if prefixes is not None and nxt not in prefixes:
+                if not _prefix_allows(prefixes, nxt):
                     break
                 cur = nxt
                 if len(cur) >= 2 and (whitelist is None or cur in whitelist):
@@ -318,18 +360,18 @@ _GLOBAL_BASE_BOUNDARIES: Optional[Set[str]] = None
 _GLOBAL_BASE_MAX_CHARS: Optional[int] = None
 
 
-def _clear_base_chars_globals() -> None:
-    global _GLOBAL_BASE_TEXTS, _GLOBAL_BASE_BOUNDARIES, _GLOBAL_BASE_MAX_CHARS
-    _GLOBAL_BASE_TEXTS = None
-    _GLOBAL_BASE_BOUNDARIES = None
-    _GLOBAL_BASE_MAX_CHARS = None
-
-
 def _init_base_chars_globals(samples: List[object], boundaries: Set[str], max_base_chars: int) -> None:
     global _GLOBAL_BASE_TEXTS, _GLOBAL_BASE_BOUNDARIES, _GLOBAL_BASE_MAX_CHARS
     _GLOBAL_BASE_TEXTS = samples
     _GLOBAL_BASE_BOUNDARIES = boundaries
     _GLOBAL_BASE_MAX_CHARS = max_base_chars
+
+
+def _clear_base_chars_globals() -> None:
+    global _GLOBAL_BASE_TEXTS, _GLOBAL_BASE_BOUNDARIES, _GLOBAL_BASE_MAX_CHARS
+    _GLOBAL_BASE_TEXTS = None
+    _GLOBAL_BASE_BOUNDARIES = None
+    _GLOBAL_BASE_MAX_CHARS = None
 
 
 def _collect_base_chars_chunk_idxs(idxs: Iterable[int]) -> Set[str]:
@@ -457,88 +499,6 @@ def _chunk_by_char_budget(items: List[object], max_chars_per_sample: int, target
     return chunks
 
 
-_GLOBAL_MI_LABELS: Optional[List[Optional[str]]] = None
-_GLOBAL_MI_TEXTS: Optional[List[str]] = None
-_GLOBAL_MI_BOUNDARIES: Optional[Set[str]] = None
-_GLOBAL_MI_MAX_LEN: Optional[int] = None
-_GLOBAL_MI_ALLOW_BOUNDARY_AT_ENDS: Optional[bool] = None
-_GLOBAL_MI_MAX_CHARS_PER_SAMPLE: Optional[int] = None
-_GLOBAL_MI_TOP: Optional[Set[str]] = None
-
-def _init_token_label_globals(
-    labels: List[Optional[str]],
-    texts: List[str],
-    boundaries: Set[str],
-    max_len: int,
-    allow_boundary_at_ends: bool,
-    max_chars_per_sample: int,
-    top: Set[str],
-) -> None:
-    global _GLOBAL_MI_LABELS, _GLOBAL_MI_TEXTS, _GLOBAL_MI_BOUNDARIES
-    global _GLOBAL_MI_MAX_LEN, _GLOBAL_MI_ALLOW_BOUNDARY_AT_ENDS, _GLOBAL_MI_MAX_CHARS_PER_SAMPLE, _GLOBAL_MI_TOP
-    _GLOBAL_MI_LABELS = labels
-    _GLOBAL_MI_TEXTS = texts
-    _GLOBAL_MI_BOUNDARIES = boundaries
-    _GLOBAL_MI_MAX_LEN = max_len
-    _GLOBAL_MI_ALLOW_BOUNDARY_AT_ENDS = allow_boundary_at_ends
-    _GLOBAL_MI_MAX_CHARS_PER_SAMPLE = max_chars_per_sample
-    _GLOBAL_MI_TOP = top
-
-def _clear_token_label_globals() -> None:
-    global _GLOBAL_MI_LABELS, _GLOBAL_MI_TEXTS, _GLOBAL_MI_BOUNDARIES
-    global _GLOBAL_MI_MAX_LEN, _GLOBAL_MI_ALLOW_BOUNDARY_AT_ENDS, _GLOBAL_MI_MAX_CHARS_PER_SAMPLE, _GLOBAL_MI_TOP
-    _GLOBAL_MI_LABELS = None
-    _GLOBAL_MI_TEXTS = None
-    _GLOBAL_MI_BOUNDARIES = None
-    _GLOBAL_MI_MAX_LEN = None
-    _GLOBAL_MI_ALLOW_BOUNDARY_AT_ENDS = None
-    _GLOBAL_MI_MAX_CHARS_PER_SAMPLE = None
-    _GLOBAL_MI_TOP = None
-
-def _count_token_label_chunk_idxs(idxs: Iterable[int]) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
-    labels = _GLOBAL_MI_LABELS
-    texts = _GLOBAL_MI_TEXTS
-    boundaries = _GLOBAL_MI_BOUNDARIES
-    max_len = _GLOBAL_MI_MAX_LEN
-    allow_boundary_at_ends = _GLOBAL_MI_ALLOW_BOUNDARY_AT_ENDS
-    max_chars_per_sample = _GLOBAL_MI_MAX_CHARS_PER_SAMPLE
-    top = _GLOBAL_MI_TOP
-    if labels is None or texts is None or boundaries is None or max_len is None or allow_boundary_at_ends is None or max_chars_per_sample is None or top is None:
-        raise RuntimeError("Token-label worker globals not initialized.")
-    local_counts: Dict[str, Dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    local_labels: Counter[str] = Counter()
-    for ii in idxs:
-        y = labels[ii]
-        if y is None:
-            continue
-        x = texts[ii]
-        local_labels[y] += 1
-        s = x[:max_chars_per_sample]
-        n = len(s)
-        i = 0
-        while i < n:
-            if s[i] in boundaries:
-                i += 1
-                continue
-            j = i
-            while j < n and (j - i) < max_len and s[j] not in boundaries:
-                j += 1
-                cur = s[i:j]
-                if len(cur) >= 2 and cur in top:
-                    local_counts[cur][y] += 1
-                if allow_boundary_at_ends:
-                    if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
-                        t = cur + s[j]
-                        if t in top:
-                            local_counts[t][y] += 1
-                    if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
-                        t = s[i - 1] + cur
-                        if t in top:
-                            local_counts[t][y] += 1
-            i += 1
-    return local_labels, {k: dict(v) for k, v in local_counts.items()}
-
-
 def _count_token_label_chunk(
     args: Tuple[List[int], List[Optional[str]], List[str], Set[str], int, bool, int, Set[str]]
 ) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
@@ -616,85 +576,6 @@ def _collect_doc_stats_chunk(
                 max_in_doc[tok] = local[tok]
     return doc_freq, max_in_doc
 
-_GLOBAL_DOC_TEXTS: Optional[List[object]] = None
-_GLOBAL_DOC_CANDIDATES: Optional[Set[str]] = None
-_GLOBAL_DOC_BOUNDARIES: Optional[Set[str]] = None
-_GLOBAL_DOC_MAX_LEN: Optional[int] = None
-_GLOBAL_DOC_ALLOW_BOUNDARY_AT_ENDS: Optional[bool] = None
-_GLOBAL_DOC_MAX_CHARS_PER_SAMPLE: Optional[int] = None
-
-def _init_doc_stats_globals(
-    texts: List[object],
-    candidates: Set[str],
-    boundaries: Set[str],
-    max_len: int,
-    allow_boundary_at_ends: bool,
-    max_chars_per_sample: int,
-) -> None:
-    global _GLOBAL_DOC_TEXTS, _GLOBAL_DOC_CANDIDATES, _GLOBAL_DOC_BOUNDARIES
-    global _GLOBAL_DOC_MAX_LEN, _GLOBAL_DOC_ALLOW_BOUNDARY_AT_ENDS, _GLOBAL_DOC_MAX_CHARS_PER_SAMPLE
-    _GLOBAL_DOC_TEXTS = texts
-    _GLOBAL_DOC_CANDIDATES = candidates
-    _GLOBAL_DOC_BOUNDARIES = boundaries
-    _GLOBAL_DOC_MAX_LEN = max_len
-    _GLOBAL_DOC_ALLOW_BOUNDARY_AT_ENDS = allow_boundary_at_ends
-    _GLOBAL_DOC_MAX_CHARS_PER_SAMPLE = max_chars_per_sample
-
-def _clear_doc_stats_globals() -> None:
-    global _GLOBAL_DOC_TEXTS, _GLOBAL_DOC_CANDIDATES, _GLOBAL_DOC_BOUNDARIES
-    global _GLOBAL_DOC_MAX_LEN, _GLOBAL_DOC_ALLOW_BOUNDARY_AT_ENDS, _GLOBAL_DOC_MAX_CHARS_PER_SAMPLE
-    _GLOBAL_DOC_TEXTS = None
-    _GLOBAL_DOC_CANDIDATES = None
-    _GLOBAL_DOC_BOUNDARIES = None
-    _GLOBAL_DOC_MAX_LEN = None
-    _GLOBAL_DOC_ALLOW_BOUNDARY_AT_ENDS = None
-    _GLOBAL_DOC_MAX_CHARS_PER_SAMPLE = None
-
-def _collect_doc_stats_chunk_idxs(idxs: Iterable[int]) -> Tuple[Counter[str], Dict[str, int]]:
-    texts = _GLOBAL_DOC_TEXTS
-    candidates = _GLOBAL_DOC_CANDIDATES
-    boundaries = _GLOBAL_DOC_BOUNDARIES
-    max_len = _GLOBAL_DOC_MAX_LEN
-    allow_boundary_at_ends = _GLOBAL_DOC_ALLOW_BOUNDARY_AT_ENDS
-    max_chars_per_sample = _GLOBAL_DOC_MAX_CHARS_PER_SAMPLE
-    if texts is None or candidates is None or boundaries is None or max_len is None or allow_boundary_at_ends is None or max_chars_per_sample is None:
-        raise RuntimeError("Doc-stats worker globals not initialized.")
-    doc_freq: Counter[str] = Counter()
-    max_in_doc: Dict[str, int] = {}
-    for idx in idxs:
-        text = _get_text(texts[idx])
-        s = text[:max_chars_per_sample]
-        n = len(s)
-        i = 0
-        local: Counter[str] = Counter()
-        while i < n:
-            if s[i] in boundaries:
-                i += 1
-                continue
-            j = i
-            while j < n and (j - i) < max_len and s[j] not in boundaries:
-                j += 1
-                cur = s[i:j]
-                if len(cur) >= 2 and cur in candidates:
-                    local[cur] += 1
-                if allow_boundary_at_ends:
-                    if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
-                        t = cur + s[j]
-                        if t in candidates:
-                            local[t] += 1
-                    if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
-                        t = s[i - 1] + cur
-                        if t in candidates:
-                            local[t] += 1
-            i += 1
-        for tok in local:
-            doc_freq[tok] += 1
-            prev = max_in_doc.get(tok, 0)
-            if local[tok] > prev:
-                max_in_doc[tok] = local[tok]
-    return doc_freq, max_in_doc
-
-
 
 def collect_candidates(
     texts: Iterable[object],
@@ -704,7 +585,7 @@ def collect_candidates(
     allow_boundary_at_ends: bool,
     max_chars_per_sample: int,
     whitelist: Optional[Set[str]] = None,
-    whitelist_prefixes: Optional[Set[str]] = None,
+    whitelist_prefixes: Optional[object] = None,
     num_workers: int = 1,
     mp_chunksize: int = 1,
     chunk_factor: int = 4,
@@ -729,7 +610,7 @@ def collect_candidates(
                 cur = ""
                 while j < n and (j - i) < max_len and s[j] not in boundaries:
                     nxt = cur + s[j]
-                    if whitelist_prefixes is not None and nxt not in whitelist_prefixes:
+                    if not _prefix_allows(whitelist_prefixes, nxt):
                         break
                     cur = nxt
                     if len(cur) >= 2 and (whitelist is None or cur in whitelist):
@@ -822,11 +703,6 @@ def collect_candidates(
     return cnt
 
 
-def _invert_utf8_bytes_for_heap(s: str) -> bytes:
-    b = s.encode("utf-8", errors="surrogatepass")
-    return bytes((255 - x) for x in b)
-
-
 def estimate_gain(token: str, freq: int) -> float:
     # With single-char base vocab, a token of length L saves (L-1) per occurrence.
     L = len(token)
@@ -867,6 +743,12 @@ def build_vocab(
     token_label_counts: Dict[str, Dict[str, int]],
     junk_penalty_beta: float = 0.0,
 ) -> Dict[str, int]:
+    """Assemble final vocab.
+
+    Memory note: we avoid materializing a full (score, token) list over all
+    candidates; instead we keep a bounded heap of size ~= remaining budget.
+    """
+
     token_to_id: Dict[str, int] = {}
     cur_id = 0
 
@@ -895,39 +777,45 @@ def build_vocab(
         return {k: i for i, (k, _) in enumerate(items)}
 
     budget = vocab_size - len(token_to_id)
-    if budget <= 0:
-        return token_to_id
+    # (score, tok) min-heap holding the best tokens
+    import heapq
 
-    # Keep only the best `budget` items using a small heap. Deterministic tie-break: higher score first, then lexicographically smaller token.
-    heap: List[Tuple[float, bytes, str]] = []
-    for tok, f in candidates.items():
-        if tok in token_to_id:
-            continue
+    heap: List[Tuple[float, str]] = []
+
+    def score_token(tok: str, f: int) -> float:
         gain = estimate_gain(tok, f)
         if gain <= 0:
-            continue
+            return float('-inf')
         score = gain
-        if semantic_mode == "mi" and lambda_sem > 0 and label_counts:
+        if semantic_mode == 'mi' and lambda_sem > 0 and label_counts:
             score += lambda_sem * compute_token_mi(tok, label_counts, token_label_counts)
         if junk_penalty_beta > 0:
             score -= junk_penalty_beta * hygiene.junk_score(tok)
+        return float(score)
 
-        if len(heap) < budget:
-            heapq.heappush(heap, (score, _invert_utf8_bytes_for_heap(tok), tok))
+    for tok, f in candidates.items():
+        if tok in token_to_id:
             continue
+        s = score_token(tok, f)
+        if s == float('-inf'):
+            continue
+        if len(heap) < budget:
+            heapq.heappush(heap, (s, tok))
+        else:
+            # Prefer higher score; break ties by token string for determinism.
+            if (s, tok) > heap[0]:
+                heapq.heapreplace(heap, (s, tok))
 
-        worst_score, _, worst_tok = heap[0]
-        if score > worst_score or (score == worst_score and tok < worst_tok):
-            heapq.heapreplace(heap, (score, _invert_utf8_bytes_for_heap(tok), tok))
+    # heap contains best tokens, but unsorted. Sort deterministically by (-score, tok)
+    heap.sort(key=lambda x: (-x[0], x[1]))
 
-    for score, _, tok in sorted(heap, key=lambda x: (-x[0], x[2])):
+    for s, tok in heap:
         if len(token_to_id) >= vocab_size:
             break
         token_to_id[tok] = cur_id
         cur_id += 1
 
     return token_to_id
-
 
 def collect_doc_stats(
     texts: Iterable[object],
@@ -978,40 +866,15 @@ def collect_doc_stats(
     else:
         print(f"Doc stats with {num_workers} workers")
         text_list = texts if isinstance(texts, list) else list(texts)
-        total = len(text_list)
-        chunk_size = max(1, total // (num_workers * max(chunk_factor, 1)))
-        num_chunks = (total + chunk_size - 1) // chunk_size
-        idx_iter = (range(i, min(i + chunk_size, total)) for i in range(0, total, chunk_size))
-        ctx = mp.get_context()
-        if ctx.get_start_method(allow_none=True) == "fork":
-            _init_doc_stats_globals(
-                text_list,
-                candidates,
-                boundaries,
-                max_len,
-                allow_boundary_at_ends,
-                max_chars_per_sample,
-            )
-            pool = ctx.Pool(processes=num_workers)
-        else:
-            pool = ctx.Pool(
-                processes=num_workers,
-                initializer=_init_doc_stats_globals,
-                initargs=(
-                    text_list,
-                    candidates,
-                    boundaries,
-                    max_len,
-                    allow_boundary_at_ends,
-                    max_chars_per_sample,
-                ),
-            )
-        with pool:
-            results_iter = pool.imap_unordered(_collect_doc_stats_chunk_idxs, idx_iter, chunksize=mp_chunksize)
+        chunk_size = max(1, len(text_list) // (num_workers * max(chunk_factor, 1)))
+        chunks = [text_list[i : i + chunk_size] for i in range(0, len(text_list), chunk_size)]
+        args_list = [(c, candidates, max_len, allow_boundary_at_ends, max_chars_per_sample, boundaries) for c in chunks]
+        with mp.Pool(processes=num_workers) as pool:
+            results_iter = pool.imap_unordered(_collect_doc_stats_chunk, args_list, chunksize=mp_chunksize)
             if _tqdm is not None:
                 results_iter = _tqdm(
                     results_iter,
-                    total=num_chunks,
+                    total=len(args_list),
                     desc="Doc stats (mp)",
                     unit="chunks",
                     file=sys.stdout,
@@ -1023,7 +886,6 @@ def collect_doc_stats(
                     prev = max_in_doc.get(tok, 0)
                     if cnt > prev:
                         max_in_doc[tok] = cnt
-        _clear_doc_stats_globals()
     return doc_freq, max_in_doc
 
 
@@ -1163,40 +1025,18 @@ def build_token_label_counts(
     else:
         print(f"Counting token-labels with {num_workers} workers")
         chunk_size = max(1, total // (num_workers * max(chunk_factor, 1)))
-        num_chunks = (total + chunk_size - 1) // chunk_size
-        idx_iter = (range(i, min(i + chunk_size, total)) for i in range(0, total, chunk_size))
-        ctx = mp.get_context()
-        if ctx.get_start_method(allow_none=True) == "fork":
-            _init_token_label_globals(
-                labels,
-                texts,
-                boundaries,
-                max_len,
-                allow_boundary_at_ends,
-                max_chars_per_sample,
-                top,
-            )
-            pool = ctx.Pool(processes=num_workers)
-        else:
-            pool = ctx.Pool(
-                processes=num_workers,
-                initializer=_init_token_label_globals,
-                initargs=(
-                    labels,
-                    texts,
-                    boundaries,
-                    max_len,
-                    allow_boundary_at_ends,
-                    max_chars_per_sample,
-                    top,
-                ),
-            )
-        with pool:
-            results_iter = pool.imap_unordered(_count_token_label_chunk_idxs, idx_iter, chunksize=mp_chunksize)
+        idxs = list(range(total))
+        chunks = [idxs[i : i + chunk_size] for i in range(0, total, chunk_size)]
+        args_list = [
+            (c, labels, texts, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample, top)
+            for c in chunks
+        ]
+        with mp.Pool(processes=num_workers) as pool:
+            results_iter = pool.imap_unordered(_count_token_label_chunk, args_list, chunksize=mp_chunksize)
             if _tqdm is not None:
                 results_iter = _tqdm(
                     results_iter,
-                    total=num_chunks,
+                    total=len(args_list),
                     desc="Counting token-labels (mp)",
                     unit="chunks",
                     file=sys.stdout,
@@ -1209,7 +1049,6 @@ def build_token_label_counts(
                 for tok, lab_map in local_counts.items():
                     for y, c in lab_map.items():
                         token_label_counts[tok][y] += c
-        _clear_token_label_globals()
 
     return dict(label_counts), {k: dict(v) for k, v in token_label_counts.items()}
 
@@ -1254,6 +1093,10 @@ def write_artifact(
     lambda_sem: float,
     semantic_top_k: int,
     model_max_length: int,
+    base_chars_max_samples: int,
+    mp_chunksize: int,
+    mp_chunk_chars: int,
+    mp_chunk_factor: int,
     emit_code: bool,
     hygiene_cfg: hygiene.HygieneConfig,
     pretok_cfg: pretokenize.PreTokenizerConfig,
@@ -1286,12 +1129,12 @@ def write_artifact(
             "semantic_mode": semantic_mode,
             "lambda_sem": lambda_sem,
             "semantic_top_k": semantic_top_k,
-            "pretokenizer": "generic" if pretok_cfg.enabled else "none",
-            "lowercase": bool(hygiene_build.get("lowercase", False)),
-            "base_chars_max_samples": args.base_chars_max_samples,
-            "mp_chunksize": args.mp_chunksize,
-            "mp_chunk_chars": args.mp_chunk_chars,
-            "mp_chunk_factor": args.mp_chunk_factor,
+                "pretokenizer": "generic" if pretok_cfg.enabled else "none",
+                "lowercase": bool(hygiene_build.get("lowercase", False)),
+                "base_chars_max_samples": int(base_chars_max_samples),
+                "mp_chunksize": int(mp_chunksize),
+                "mp_chunk_chars": int(mp_chunk_chars),
+                "mp_chunk_factor": int(mp_chunk_factor),
             **hygiene_build,
         },
     }
@@ -1342,6 +1185,764 @@ def write_artifact(
             "- ctok_meta.json: build metadata\n"
             "- tokenizer_config.json, special_tokens_map.json: Transformers integration\n"
         )
+
+
+def _iter_chunks_by_char_budget(
+    items: Iterable[object],
+    max_chars_per_sample: int,
+    target_chunk_chars: int,
+    target_chunk_docs: int,
+) -> Iterable[List[object]]:
+    """Yield reasonably sized lists from a stream without materializing all data."""
+
+    if target_chunk_docs <= 0:
+        target_chunk_docs = 2048
+    if target_chunk_chars <= 0:
+        target_chunk_chars = 0
+
+    chunk: List[object] = []
+    cur_chars = 0
+    for it in items:
+        chunk.append(it)
+        if target_chunk_chars:
+            try:
+                cur_chars += min(len(_get_text(it)), max_chars_per_sample)
+            except Exception:
+                cur_chars += max_chars_per_sample
+        if (target_chunk_chars and cur_chars >= target_chunk_chars) or (
+            (not target_chunk_chars) and len(chunk) >= target_chunk_docs
+        ):
+            yield chunk
+            chunk = []
+            cur_chars = 0
+    if chunk:
+        yield chunk
+
+
+# ------------------------------
+# Streaming candidate collection
+# ------------------------------
+
+
+_STREAM_CAND_BOUNDARIES: Optional[Set[str]] = None
+_STREAM_CAND_MAX_LEN: Optional[int] = None
+_STREAM_CAND_ALLOW_BOUNDARY_AT_ENDS: Optional[bool] = None
+_STREAM_CAND_MAX_CHARS: Optional[int] = None
+_STREAM_CAND_WHITELIST: Optional[Set[str]] = None
+_STREAM_CAND_PREFIXES: Optional[object] = None
+
+
+def _init_stream_candidates_worker(
+    boundaries: Set[str],
+    max_len: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+    whitelist: Optional[Set[str]],
+    prefixes: Optional[object],
+) -> None:
+    global _STREAM_CAND_BOUNDARIES, _STREAM_CAND_MAX_LEN, _STREAM_CAND_ALLOW_BOUNDARY_AT_ENDS
+    global _STREAM_CAND_MAX_CHARS, _STREAM_CAND_WHITELIST, _STREAM_CAND_PREFIXES
+    _STREAM_CAND_BOUNDARIES = boundaries
+    _STREAM_CAND_MAX_LEN = max_len
+    _STREAM_CAND_ALLOW_BOUNDARY_AT_ENDS = allow_boundary_at_ends
+    _STREAM_CAND_MAX_CHARS = max_chars_per_sample
+    _STREAM_CAND_WHITELIST = whitelist
+    _STREAM_CAND_PREFIXES = prefixes
+
+
+def _collect_stream_candidates_chunk(items: List[object]) -> Counter[str]:
+    boundaries = _STREAM_CAND_BOUNDARIES
+    max_len = _STREAM_CAND_MAX_LEN
+    allow_boundary_at_ends = _STREAM_CAND_ALLOW_BOUNDARY_AT_ENDS
+    max_chars_per_sample = _STREAM_CAND_MAX_CHARS
+    whitelist = _STREAM_CAND_WHITELIST
+    prefixes = _STREAM_CAND_PREFIXES
+    if boundaries is None or max_len is None or allow_boundary_at_ends is None or max_chars_per_sample is None:
+        raise RuntimeError("Stream candidate worker globals not initialized.")
+
+    cnt: Counter[str] = Counter()
+    for item in items:
+        s = _get_text(item)[:max_chars_per_sample]
+        n = len(s)
+        i = 0
+        while i < n:
+            if s[i] in boundaries:
+                i += 1
+                continue
+            j = i
+            cur = ""
+            while j < n and (j - i) < max_len and s[j] not in boundaries:
+                nxt = cur + s[j]
+                if not _prefix_allows(prefixes, nxt):
+                    break
+                cur = nxt
+                if len(cur) >= 2 and (whitelist is None or cur in whitelist):
+                    cnt[cur] += 1
+                j += 1
+            if allow_boundary_at_ends and len(cur) >= 2:
+                if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
+                    t = cur + s[j]
+                    if whitelist is None or t in whitelist:
+                        cnt[t] += 1
+                if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
+                    t = s[i - 1] + cur
+                    if whitelist is None or t in whitelist:
+                        cnt[t] += 1
+            i += 1
+    return cnt
+
+
+def collect_candidates_streaming(
+    texts: Iterable[object],
+    boundaries: Set[str],
+    max_len: int,
+    min_freq: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+    whitelist: Optional[Set[str]] = None,
+    whitelist_prefixes: Optional[object] = None,
+    num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_docs: int = 2048,
+    chunk_chars: int = 0,
+    total: Optional[int] = None,
+) -> Counter[str]:
+    """Streaming version of collect_candidates to avoid materializing the corpus."""
+    cnt: Counter[str] = Counter()
+    if num_workers <= 1:
+        # Initialize globals so the worker routine can be reused in-process.
+        _init_stream_candidates_worker(
+            boundaries,
+            max_len,
+            allow_boundary_at_ends,
+            max_chars_per_sample,
+            whitelist,
+            whitelist_prefixes,
+        )
+        chunks_iter = _iter_chunks_by_char_budget(
+            texts,
+            max_chars_per_sample=max_chars_per_sample,
+            target_chunk_chars=chunk_chars,
+            target_chunk_docs=chunk_docs,
+        )
+        it = _progress(chunks_iter, total=None, desc="Collecting candidates", unit="chunks")
+        for chunk in it:
+            cnt.update(_collect_stream_candidates_chunk(chunk))
+    else:
+        print(f"Collecting candidates (streaming) with {num_workers} workers")
+        chunks_iter = _iter_chunks_by_char_budget(
+            texts, max_chars_per_sample=max_chars_per_sample, target_chunk_chars=chunk_chars, target_chunk_docs=chunk_docs
+        )
+        with mp.Pool(
+            processes=num_workers,
+            initializer=_init_stream_candidates_worker,
+            initargs=(
+                boundaries,
+                max_len,
+                allow_boundary_at_ends,
+                max_chars_per_sample,
+                whitelist,
+                whitelist_prefixes,
+            ),
+        ) as pool:
+            results_iter = pool.imap_unordered(_collect_stream_candidates_chunk, chunks_iter, chunksize=mp_chunksize)
+            if _tqdm is not None:
+                results_iter = _tqdm(
+                    results_iter,
+                    desc="Collecting candidates (mp)",
+                    unit="chunks",
+                    file=sys.stdout,
+                    dynamic_ncols=True,
+                )
+            for c in results_iter:
+                cnt.update(c)
+
+    # filter by min_freq
+    if min_freq > 1:
+        for k in list(cnt.keys()):
+            if cnt[k] < min_freq:
+                del cnt[k]
+    return cnt
+
+
+# ------------------------------
+# Streaming doc stats collection
+# ------------------------------
+
+
+_STREAM_DOC_BOUNDARIES: Optional[Set[str]] = None
+_STREAM_DOC_MAX_LEN: Optional[int] = None
+_STREAM_DOC_ALLOW_BOUNDARY_AT_ENDS: Optional[bool] = None
+_STREAM_DOC_MAX_CHARS: Optional[int] = None
+_STREAM_DOC_CANDIDATES: Optional[Set[str]] = None
+
+
+def _init_stream_doc_worker(
+    candidates: Set[str],
+    boundaries: Set[str],
+    max_len: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+) -> None:
+    global _STREAM_DOC_BOUNDARIES, _STREAM_DOC_MAX_LEN, _STREAM_DOC_ALLOW_BOUNDARY_AT_ENDS
+    global _STREAM_DOC_MAX_CHARS, _STREAM_DOC_CANDIDATES
+    _STREAM_DOC_CANDIDATES = candidates
+    _STREAM_DOC_BOUNDARIES = boundaries
+    _STREAM_DOC_MAX_LEN = max_len
+    _STREAM_DOC_ALLOW_BOUNDARY_AT_ENDS = allow_boundary_at_ends
+    _STREAM_DOC_MAX_CHARS = max_chars_per_sample
+
+
+def _collect_stream_doc_stats_chunk(items: List[object]) -> Tuple[Counter[str], Dict[str, int]]:
+    candidates = _STREAM_DOC_CANDIDATES
+    boundaries = _STREAM_DOC_BOUNDARIES
+    max_len = _STREAM_DOC_MAX_LEN
+    allow_boundary_at_ends = _STREAM_DOC_ALLOW_BOUNDARY_AT_ENDS
+    max_chars_per_sample = _STREAM_DOC_MAX_CHARS
+    if (
+        candidates is None
+        or boundaries is None
+        or max_len is None
+        or allow_boundary_at_ends is None
+        or max_chars_per_sample is None
+    ):
+        raise RuntimeError("Stream doc worker globals not initialized.")
+
+    doc_freq: Counter[str] = Counter()
+    max_in_doc: Dict[str, int] = {}
+    for item in items:
+        s = _get_text(item)[:max_chars_per_sample]
+        n = len(s)
+        i = 0
+        local: Counter[str] = Counter()
+        while i < n:
+            if s[i] in boundaries:
+                i += 1
+                continue
+            j = i
+            while j < n and (j - i) < max_len and s[j] not in boundaries:
+                j += 1
+                cur = s[i:j]
+                if len(cur) >= 2 and cur in candidates:
+                    local[cur] += 1
+                if allow_boundary_at_ends:
+                    if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
+                        t = cur + s[j]
+                        if t in candidates:
+                            local[t] += 1
+                    if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
+                        t = s[i - 1] + cur
+                        if t in candidates:
+                            local[t] += 1
+            i += 1
+        for tok in local:
+            doc_freq[tok] += 1
+            prev = max_in_doc.get(tok, 0)
+            if local[tok] > prev:
+                max_in_doc[tok] = local[tok]
+    return doc_freq, max_in_doc
+
+
+def collect_doc_stats_streaming(
+    texts: Iterable[object],
+    candidates: Set[str],
+    boundaries: Set[str],
+    max_len: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+    num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_docs: int = 2048,
+    chunk_chars: int = 0,
+    total: Optional[int] = None,
+) -> Tuple[Counter[str], Dict[str, int]]:
+    doc_freq: Counter[str] = Counter()
+    max_in_doc: Dict[str, int] = {}
+    if num_workers <= 1:
+        _init_stream_doc_worker(candidates, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample)
+        chunks_iter = _iter_chunks_by_char_budget(
+            texts,
+            max_chars_per_sample=max_chars_per_sample,
+            target_chunk_chars=chunk_chars,
+            target_chunk_docs=chunk_docs,
+        )
+        it = _progress(chunks_iter, total=None, desc="Doc stats", unit="chunks")
+        for chunk in it:
+            df, mid = _collect_stream_doc_stats_chunk(chunk)
+            doc_freq.update(df)
+            for tok, v in mid.items():
+                pv = max_in_doc.get(tok, 0)
+                if v > pv:
+                    max_in_doc[tok] = v
+    else:
+        print(f"Doc stats (streaming) with {num_workers} workers")
+        chunks_iter = _iter_chunks_by_char_budget(
+            texts, max_chars_per_sample=max_chars_per_sample, target_chunk_chars=chunk_chars, target_chunk_docs=chunk_docs
+        )
+        with mp.Pool(
+            processes=num_workers,
+            initializer=_init_stream_doc_worker,
+            initargs=(candidates, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample),
+        ) as pool:
+            results_iter = pool.imap_unordered(_collect_stream_doc_stats_chunk, chunks_iter, chunksize=mp_chunksize)
+            if _tqdm is not None:
+                results_iter = _tqdm(
+                    results_iter,
+                    desc="Doc stats (mp)",
+                    unit="chunks",
+                    file=sys.stdout,
+                    dynamic_ncols=True,
+                )
+            for df, mid in results_iter:
+                doc_freq.update(df)
+                for tok, v in mid.items():
+                    pv = max_in_doc.get(tok, 0)
+                    if v > pv:
+                        max_in_doc[tok] = v
+    return doc_freq, max_in_doc
+
+
+# ------------------------------
+# Streaming token-label counts
+# ------------------------------
+
+
+_STREAM_MI_TOP: Optional[Set[str]] = None
+_STREAM_MI_BOUNDARIES: Optional[Set[str]] = None
+_STREAM_MI_MAX_LEN: Optional[int] = None
+_STREAM_MI_ALLOW_BOUNDARY_AT_ENDS: Optional[bool] = None
+_STREAM_MI_MAX_CHARS: Optional[int] = None
+
+
+def _init_stream_mi_worker(
+    top: Set[str],
+    boundaries: Set[str],
+    max_len: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+) -> None:
+    global _STREAM_MI_TOP, _STREAM_MI_BOUNDARIES, _STREAM_MI_MAX_LEN, _STREAM_MI_ALLOW_BOUNDARY_AT_ENDS, _STREAM_MI_MAX_CHARS
+    _STREAM_MI_TOP = top
+    _STREAM_MI_BOUNDARIES = boundaries
+    _STREAM_MI_MAX_LEN = max_len
+    _STREAM_MI_ALLOW_BOUNDARY_AT_ENDS = allow_boundary_at_ends
+    _STREAM_MI_MAX_CHARS = max_chars_per_sample
+
+
+def _collect_stream_mi_chunk(items: List[Tuple[str, str]]) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
+    top = _STREAM_MI_TOP
+    boundaries = _STREAM_MI_BOUNDARIES
+    max_len = _STREAM_MI_MAX_LEN
+    allow_boundary_at_ends = _STREAM_MI_ALLOW_BOUNDARY_AT_ENDS
+    max_chars_per_sample = _STREAM_MI_MAX_CHARS
+    if (
+        top is None
+        or boundaries is None
+        or max_len is None
+        or allow_boundary_at_ends is None
+        or max_chars_per_sample is None
+    ):
+        raise RuntimeError("Stream MI worker globals not initialized.")
+
+    label_counts: Counter[str] = Counter()
+    token_label_counts: Dict[str, Dict[str, int]] = {tok: {} for tok in top}
+
+    for y, x in items:
+        label_counts[y] += 1
+        s = x[:max_chars_per_sample]
+        n = len(s)
+        i = 0
+        local: Counter[str] = Counter()
+        while i < n:
+            if s[i] in boundaries:
+                i += 1
+                continue
+            j = i
+            while j < n and (j - i) < max_len and s[j] not in boundaries:
+                j += 1
+                cur = s[i:j]
+                if len(cur) >= 2 and cur in top:
+                    local[cur] += 1
+                if allow_boundary_at_ends:
+                    if j < n and (len(cur) + 1) <= max_len and s[j] in boundaries:
+                        t = cur + s[j]
+                        if t in top:
+                            local[t] += 1
+                    if i > 0 and (len(cur) + 1) <= max_len and s[i - 1] in boundaries:
+                        t = s[i - 1] + cur
+                        if t in top:
+                            local[t] += 1
+            i += 1
+
+        for tok, c in local.items():
+            if c <= 0:
+                continue
+            d = token_label_counts.get(tok)
+            if d is None:
+                continue
+            d[y] = int(d.get(y, 0)) + int(c)
+
+    return label_counts, token_label_counts
+
+
+def build_token_label_counts_streaming(
+    samples: Iterable[Tuple[Optional[str], str]],
+    top: Set[str],
+    boundaries: Set[str],
+    max_len: int,
+    allow_boundary_at_ends: bool,
+    max_chars_per_sample: int,
+    num_workers: int = 1,
+    mp_chunksize: int = 1,
+    chunk_docs: int = 2048,
+    chunk_chars: int = 0,
+    total: Optional[int] = None,
+) -> Tuple[Counter[str], Dict[str, Dict[str, int]]]:
+    label_counts: Counter[str] = Counter()
+    token_label_counts: Dict[str, Dict[str, int]] = {tok: {} for tok in top}
+
+    def _samples_only_labeled() -> Iterable[Tuple[str, str]]:
+        for y, x in samples:
+            if y is None:
+                continue
+            yield str(y), x
+
+    if num_workers <= 1:
+        _init_stream_mi_worker(top, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample)
+        chunks_iter = _iter_chunks_by_char_budget(
+            _samples_only_labeled(),
+            max_chars_per_sample=max_chars_per_sample,
+            target_chunk_chars=chunk_chars,
+            target_chunk_docs=chunk_docs,
+        )
+        it = _progress(chunks_iter, total=None, desc="Token-label counts", unit="chunks")
+        for chunk in it:
+            lc, tlc = _collect_stream_mi_chunk(chunk)
+            label_counts.update(lc)
+            for tok, d in tlc.items():
+                if not d:
+                    continue
+                out = token_label_counts.setdefault(tok, {})
+                for yy, cc in d.items():
+                    out[yy] = int(out.get(yy, 0)) + int(cc)
+    else:
+        print(f"Token-label counts (streaming) with {num_workers} workers")
+        chunks_iter = _iter_chunks_by_char_budget(
+            _samples_only_labeled(),
+            max_chars_per_sample=max_chars_per_sample,
+            target_chunk_chars=chunk_chars,
+            target_chunk_docs=chunk_docs,
+        )
+        with mp.Pool(
+            processes=num_workers,
+            initializer=_init_stream_mi_worker,
+            initargs=(top, boundaries, max_len, allow_boundary_at_ends, max_chars_per_sample),
+        ) as pool:
+            results_iter = pool.imap_unordered(_collect_stream_mi_chunk, chunks_iter, chunksize=mp_chunksize)
+            if _tqdm is not None:
+                results_iter = _tqdm(
+                    results_iter,
+                    desc="Token-label counts (mp)",
+                    unit="chunks",
+                    file=sys.stdout,
+                    dynamic_ncols=True,
+                )
+            for lc, tlc in results_iter:
+                label_counts.update(lc)
+                for tok, d in tlc.items():
+                    if not d:
+                        continue
+                    out = token_label_counts.setdefault(tok, {})
+                    for yy, cc in d.items():
+                        out[yy] = int(out.get(yy, 0)) + int(cc)
+    return label_counts, token_label_counts
+
+
+def build_ctok_from_corpus_streaming(
+    make_samples: "Callable[[], Iterable[Tuple[Optional[str], str]]]",
+    text_key: str,
+    label_key: Optional[str],
+    outdir: str,
+    args: argparse.Namespace,
+) -> None:
+    """Streaming corpus builder.
+
+    Major goal: avoid materializing full corpora in memory. The pipeline
+    re-iterates the corpus for each phase (prefilter, base chars, candidates,
+    doc stats, MI), trading a few extra passes for large memory reductions.
+    """
+
+    boundaries = parse_boundaries(args.boundaries)
+    num_workers = args.num_workers
+    if num_workers <= 0:
+        num_workers = max(1, mp.cpu_count() - 1)
+
+    hygiene_cfg = hygiene.default_hygiene_config()
+    hygiene_cfg.enabled = not args.no_hygiene
+    if not hygiene_cfg.enabled:
+        hygiene_cfg.typed_tokens = []
+        hygiene_cfg.patterns = []
+
+    pretok_cfg = pretokenize.default_pretokenizer_config()
+    pretok_cfg.enabled = args.pretokenizer != "none"
+    if not pretok_cfg.enabled:
+        pretok_cfg.patterns = []
+
+    allow_boundary_at_ends = not args.no_boundary_ends
+
+    # Count total (used for deterministic prefilter sampling & progress).
+    total_samples = 0
+    for _ in make_samples():
+        total_samples += 1
+    if total_samples == 0:
+        raise ValueError("Empty corpus")
+
+    def _iter_preprocessed_samples() -> Iterable[Tuple[Optional[str], str]]:
+        for y, x in make_samples():
+            if args.lowercase:
+                x = x.lower()
+            if hygiene_cfg.enabled:
+                x = hygiene.apply_hygiene(x, hygiene_cfg)
+            if pretok_cfg.enabled:
+                x = pretokenize.apply_pretokenize(x, pretok_cfg)
+            yield y, x
+
+    def _iter_preprocessed_texts() -> Iterable[str]:
+        for _y, x in _iter_preprocessed_samples():
+            yield x
+
+    # -------------------------
+    # Base chars (1 pass)
+    # -------------------------
+    base_chars = set(boundaries)
+    if args.use_ascii_base:
+        base_chars |= set(string.ascii_letters + string.digits + string.punctuation)
+    for t in hygiene_cfg.typed_tokens:
+        for ch in t:
+            base_chars.add(ch)
+
+    max_base_samples = int(args.base_chars_max_samples)
+    if max_base_samples <= 0:
+        max_base_samples = min(total_samples, 100_000)
+    seen = 0
+    for x in _progress(_iter_preprocessed_texts(), total=total_samples, desc="Collecting base chars", unit="samples"):
+        for ch in x[: args.max_chars_per_sample]:
+            if ch not in boundaries:
+                base_chars.add(ch)
+            if len(base_chars) >= args.max_base_chars:
+                break
+        seen += 1
+        if len(base_chars) >= args.max_base_chars or seen >= max_base_samples:
+            break
+    # Hard cap
+    if len(base_chars) > args.max_base_chars:
+        base_chars = set(sorted(base_chars)[: args.max_base_chars])
+
+    # -------------------------
+    # Candidate prefilter (optional)
+    # -------------------------
+    candidate_whitelist: Optional[Set[str]] = None
+    candidate_prefixes: Optional[object] = None
+    prefilter_samples = int(args.candidate_prefilter_samples)
+    prefilter_min_freq = int(args.candidate_prefilter_min_freq)
+    if prefilter_samples <= 0:
+        _total_mem, avail_mem = _get_memory_info_bytes()
+        if total_samples >= 1_000_000 and args.max_len >= 8 and args.max_chars_per_sample >= 1024:
+            avail_gb = (avail_mem or 0) / (1024**3)
+            if avail_mem is None or avail_gb < 24:
+                if avail_mem is None:
+                    prefilter_samples = min(500_000, total_samples)
+                elif avail_gb < 8:
+                    prefilter_samples = min(200_000, total_samples)
+                elif avail_gb < 16:
+                    prefilter_samples = min(400_000, total_samples)
+                else:
+                    prefilter_samples = min(800_000, total_samples)
+                if prefilter_min_freq <= 0:
+                    prefilter_min_freq = 2 if args.min_freq >= 5 else 1
+                mem_note = "unknown" if avail_mem is None else f"{avail_gb:.1f}GB"
+                print(
+                    f"Auto prefiltering candidates with {prefilter_samples} samples "
+                    f"(min_freq={prefilter_min_freq}, avail_mem={mem_note})"
+                )
+    if prefilter_samples and prefilter_samples > 0 and prefilter_samples < total_samples:
+        idxs = set(_select_prefilter_indices(total_samples, prefilter_samples))
+        sample_texts: List[str] = []
+        for i, x in enumerate(_iter_preprocessed_texts()):
+            if i in idxs:
+                sample_texts.append(x)
+                if len(sample_texts) >= prefilter_samples:
+                    break
+        print(f"Prefiltering candidates with {len(sample_texts)} samples")
+        pre_cands = collect_candidates(
+            texts=sample_texts,
+            boundaries=boundaries,
+            max_len=args.max_len,
+            min_freq=1,
+            allow_boundary_at_ends=allow_boundary_at_ends,
+            max_chars_per_sample=args.max_chars_per_sample,
+            num_workers=max(1, min(num_workers, 8)),
+            mp_chunksize=args.mp_chunksize,
+            chunk_factor=args.mp_chunk_factor,
+            chunk_chars=args.mp_chunk_chars,
+        )
+        pre_min = max(1, prefilter_min_freq)
+        if pre_min > 1:
+            for k in list(pre_cands.keys()):
+                if pre_cands[k] < pre_min:
+                    del pre_cands[k]
+        candidate_whitelist = set(pre_cands.keys())
+        candidate_prefixes = _build_prefixes(candidate_whitelist, boundaries)
+        print(f"Prefilter candidates kept: {len(candidate_whitelist)}")
+        del sample_texts
+        del pre_cands
+        gc.collect()
+
+    # -------------------------
+    # Candidates (streaming pass)
+    # -------------------------
+    cands = collect_candidates_streaming(
+        texts=_iter_preprocessed_texts(),
+        boundaries=boundaries,
+        max_len=args.max_len,
+        min_freq=args.min_freq,
+        allow_boundary_at_ends=allow_boundary_at_ends,
+        max_chars_per_sample=args.max_chars_per_sample,
+        whitelist=candidate_whitelist,
+        whitelist_prefixes=candidate_prefixes,
+        num_workers=num_workers,
+        mp_chunksize=args.mp_chunksize,
+        chunk_docs=2048,
+        chunk_chars=args.mp_chunk_chars,
+        total=total_samples,
+    )
+    cands_raw = cands
+
+    # Filter out fragments of typed/value tokens without an extra corpus pass.
+    cands = filter_candidates(
+        candidates=cands,
+        texts=[],  # ignored in fragment filtering stage (doc stats stage handled below)
+        boundaries=boundaries,
+        max_len=args.max_len,
+        allow_boundary_at_ends=allow_boundary_at_ends,
+        max_chars_per_sample=args.max_chars_per_sample,
+        # Disable doc filters here because `texts` is intentionally empty in the streaming
+        # pipeline. We apply doc filters below via `collect_doc_stats_streaming`.
+        min_doc_freq=0,
+        max_doc_concentration=0,
+        typed_tokens=hygiene_cfg.typed_tokens,
+        value_tokens=hygiene.VALUE_TOKENS,
+        num_workers=1,
+        mp_chunksize=args.mp_chunksize,
+        chunk_factor=args.mp_chunk_factor,
+        chunk_chars=0,
+    )
+
+    # The above call expects to compute doc stats over `texts` when doc filters are enabled.
+    # Since we passed an empty list to keep memory low, we re-run doc stats in streaming mode.
+    if args.min_doc_freq > 0 or args.max_doc_concentration > 0:
+        print("Computing candidate doc stats (streaming)...")
+        doc_freq, max_in_doc = collect_doc_stats_streaming(
+            texts=_iter_preprocessed_texts(),
+            candidates=set(cands.keys()),
+            boundaries=boundaries,
+            max_len=args.max_len,
+            allow_boundary_at_ends=allow_boundary_at_ends,
+            max_chars_per_sample=args.max_chars_per_sample,
+            num_workers=num_workers,
+            mp_chunksize=args.mp_chunksize,
+            chunk_docs=2048,
+            chunk_chars=args.mp_chunk_chars,
+            total=total_samples,
+        )
+        # apply doc filters
+        if args.min_doc_freq > 0:
+            for tok in list(cands.keys()):
+                if doc_freq.get(tok, 0) < args.min_doc_freq:
+                    del cands[tok]
+        if args.max_doc_concentration > 0:
+            for tok in list(cands.keys()):
+                df = doc_freq.get(tok, 0)
+                if df <= 0:
+                    del cands[tok]
+                    continue
+                conc = max_in_doc.get(tok, 0) / float(df)
+                if conc > args.max_doc_concentration:
+                    del cands[tok]
+        print(f"Candidates kept after doc filters: {len(cands)}")
+
+    # -------------------------
+    # Semantic scoring: token MI (optional)
+    # -------------------------
+    label_counts: Dict[str, int] = {}
+    token_label_counts: Dict[str, Dict[str, int]] = {}
+    if args.semantic_mode == "mi" and label_key is not None and args.lambda_sem > 0:
+        top = set([t for t, _ in cands_raw.most_common(args.semantic_top_k)])
+        print(f"Computing token MI on top {len(top)} candidates (streaming)...")
+        lc, tlc = build_token_label_counts_streaming(
+            samples=_iter_preprocessed_samples(),
+            top=top,
+            boundaries=boundaries,
+            max_len=args.max_len,
+            allow_boundary_at_ends=allow_boundary_at_ends,
+            max_chars_per_sample=args.max_chars_per_sample,
+            num_workers=num_workers,
+            mp_chunksize=args.mp_chunksize,
+            chunk_docs=2048,
+            chunk_chars=args.mp_chunk_chars,
+            total=total_samples,
+        )
+        label_counts = dict(lc)
+        # keep only candidates that survived final filtering
+        token_label_counts = {tok: tlc.get(tok, {}) for tok in cands.keys()}
+
+    # -------------------------
+    # Assemble vocab & write artifact
+    # -------------------------
+    special_tokens = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
+    required_tokens = list(hygiene_cfg.typed_tokens)
+    token_to_id = build_vocab(
+        base_chars=base_chars,
+        candidates=cands,
+        vocab_size=args.vocab_size,
+        special_tokens=special_tokens,
+        required_tokens=required_tokens,
+        semantic_mode=args.semantic_mode,
+        lambda_sem=args.lambda_sem,
+        label_counts=label_counts,
+        token_label_counts=token_label_counts,
+        junk_penalty_beta=args.junk_penalty_beta,
+    )
+
+    hygiene_metrics = {}
+    hygiene_build = {
+        "lowercase": bool(args.lowercase),
+    }
+
+    write_artifact(
+        outdir=outdir,
+        token_to_id=token_to_id,
+        boundaries=boundaries,
+        vocab_size=args.vocab_size,
+        max_len=args.max_len,
+        min_freq=args.min_freq,
+        fmt=args.format,
+        text_key=text_key,
+        label_key=label_key,
+        semantic_mode=args.semantic_mode,
+        lambda_sem=args.lambda_sem,
+        semantic_top_k=args.semantic_top_k,
+        model_max_length=args.model_max_length,
+        base_chars_max_samples=args.base_chars_max_samples,
+        mp_chunksize=args.mp_chunksize,
+        mp_chunk_chars=args.mp_chunk_chars,
+        mp_chunk_factor=args.mp_chunk_factor,
+        emit_code=args.emit_code,
+        hygiene_cfg=hygiene_cfg,
+        pretok_cfg=pretok_cfg,
+        hygiene_metrics=hygiene_metrics,
+        hygiene_build=hygiene_build,
+    )
 
 
 def build_ctok_from_samples(
@@ -1447,7 +2048,7 @@ def build_ctok_from_samples(
     allow_boundary_at_ends = not args.no_boundary_ends
 
     candidate_whitelist: Optional[Set[str]] = None
-    candidate_prefixes: Optional[Set[str]] = None
+    candidate_prefixes: Optional[object] = None
     prefilter_samples = args.candidate_prefilter_samples
     prefilter_min_freq = args.candidate_prefilter_min_freq
     total_texts = len(texts)
@@ -1577,6 +2178,10 @@ def build_ctok_from_samples(
         lambda_sem=args.lambda_sem,
         semantic_top_k=args.semantic_top_k,
         model_max_length=args.model_max_length,
+            base_chars_max_samples=args.base_chars_max_samples,
+            mp_chunksize=args.mp_chunksize,
+            mp_chunk_chars=args.mp_chunk_chars,
+            mp_chunk_factor=args.mp_chunk_factor,
         emit_code=args.emit_code,
         hygiene_cfg=hygiene_cfg,
         pretok_cfg=pretok_cfg,
@@ -1608,6 +2213,11 @@ def main() -> None:
     ap.add_argument("--max_len", type=int, default=12)
     ap.add_argument("--min_freq", type=int, default=50)
     ap.add_argument("--max_samples", type=int, default=0)
+    ap.add_argument(
+        "--materialize",
+        action="store_true",
+        help="Legacy mode: read all samples into memory before building.",
+    )
     ap.add_argument("--max_chars_per_sample", type=int, default=4096)
     ap.add_argument("--boundaries", type=str, default="=&?:/\\n\\t <>\\\"'", help="Boundary characters (supports escapes)")
     ap.add_argument("--no_boundary_ends", action="store_true")
@@ -1653,19 +2263,28 @@ def main() -> None:
 
     label_key = args.label_key if args.label_key else None
 
-    it = corpus_iter(args.format, args.corpus, args.max_samples, args.text_key, label_key)
+    def make_samples() -> Iterable[Tuple[Optional[str], str]]:
+        return corpus_iter(args.format, args.corpus, args.max_samples, args.text_key, label_key)
 
-    samples: List[Tuple[Optional[str], str]] = []
-    for y, x in _progress(it, desc="Reading corpus", unit="samples"):
-        samples.append((y, x))
-
-    build_ctok_from_samples(
-        samples=samples,
-        text_key=args.text_key,
-        label_key=label_key,
-        outdir=args.outdir,
-        args=args,
-    )
+    if args.materialize:
+        samples: List[Tuple[Optional[str], str]] = []
+        for y, x in _progress(make_samples(), desc="Reading corpus", unit="samples"):
+            samples.append((y, x))
+        build_ctok_from_samples(
+            samples=samples,
+            text_key=args.text_key,
+            label_key=label_key,
+            outdir=args.outdir,
+            args=args,
+        )
+    else:
+        build_ctok_from_corpus_streaming(
+            make_samples=make_samples,
+            text_key=args.text_key,
+            label_key=label_key,
+            outdir=args.outdir,
+            args=args,
+        )
 
 
 if __name__ == "__main__":
