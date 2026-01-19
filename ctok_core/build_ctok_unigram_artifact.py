@@ -31,6 +31,7 @@ import gzip
 import json
 import math
 import os
+import multiprocessing as mp
 import random
 import sys
 from collections import Counter
@@ -96,12 +97,46 @@ def iter_jsonl(path: str, max_samples: Optional[int], text_key: str) -> Iterator
                 break
 
 
-def iter_parquet(path: str, max_samples: Optional[int], text_key: str) -> Iterator[str]:
+def iter_parquet(path: str, max_samples: Optional[int], text_key: str, *, waf_join: bool = False) -> Iterator[str]:
     # Build-time convenience (pyarrow preferred).
     try:
         import pyarrow.dataset as ds  # type: ignore
 
         dataset = ds.dataset(path, format="parquet")
+
+        # Fast path for WAF dataset: join multiple columns into one string at Arrow level.
+        if waf_join:
+            import pyarrow as pa  # type: ignore
+            import pyarrow.compute as pc  # type: ignore
+
+            cols = ["method", "url", "protocol", "headers", "body"]
+            scanner = dataset.scanner(columns=cols)
+            n = 0
+            for batch in scanner.to_batches():
+                rb = batch
+                m = pc.fill_null(rb.column(0).cast(pa.string()), "")
+                u = pc.fill_null(rb.column(1).cast(pa.string()), "")
+                p = pc.fill_null(rb.column(2).cast(pa.string()), "")
+                h = pc.fill_null(rb.column(3).cast(pa.string()), "")
+                b = pc.fill_null(rb.column(4).cast(pa.string()), "")
+
+                # Element-wise concatenation in Arrow (avoids Python loops).
+                t1 = pc.binary_join_element_wise([pa.array(["<METHOD> "] * len(rb)), m, pa.array(["\n"] * len(rb))], "")
+                t2 = pc.binary_join_element_wise([pa.array(["<URL> "] * len(rb)), u, pa.array(["\n"] * len(rb))], "")
+                t3 = pc.binary_join_element_wise([pa.array(["<PROT> "] * len(rb)), p, pa.array(["\n"] * len(rb))], "")
+                t4 = pc.binary_join_element_wise([pa.array(["<HDR>\n"] * len(rb)), h, pa.array(["\n"] * len(rb))], "")
+                t5 = pc.binary_join_element_wise([pa.array(["<BODY>\n"] * len(rb)), b, pa.array(["\n"] * len(rb))], "")
+                text_arr = pc.binary_join_element_wise([t1, t2, t3, t4, t5], "")
+
+                for x in text_arr.to_pylist():
+                    if not x:
+                        continue
+                    yield x
+                    n += 1
+                    if max_samples is not None and n >= max_samples:
+                        return
+            return
+
         scanner = dataset.scanner(columns=[text_key])
         n = 0
         for batch in scanner.to_batches():
@@ -126,7 +161,7 @@ def iter_parquet(path: str, max_samples: Optional[int], text_key: str) -> Iterat
             yield str(x)
 
 
-def corpus_iter(fmt: str, path: str, max_samples: Optional[int], text_key: str) -> Iterator[str]:
+def corpus_iter(fmt: str, path: str, max_samples: Optional[int], text_key: str, *, waf_join: bool = False) -> Iterator[str]:
     if fmt == "txt":
         return iter_txt(path, max_samples)
     if fmt == "tsv":
@@ -134,7 +169,7 @@ def corpus_iter(fmt: str, path: str, max_samples: Optional[int], text_key: str) 
     if fmt == "jsonl":
         return iter_jsonl(path, max_samples, text_key=text_key)
     if fmt == "parquet":
-        return iter_parquet(path, max_samples, text_key=text_key)
+        return iter_parquet(path, max_samples, text_key=text_key, waf_join=waf_join)
     raise ValueError(f"Unknown --format: {fmt}")
 
 
@@ -207,6 +242,7 @@ class TrainSpec:
     sample_words: int = 200_000
     max_word_len: int = 200
     max_len: int = 16
+    num_workers: int = 0  # 0 => auto (cpu_count), 1 => single-process
     prune_iters: int = 6
     prune_frac: float = 0.20
     smoothing: float = 1e-4
@@ -248,25 +284,64 @@ def _collect_substrings(words: Sequence[str], *, max_len: int) -> Counter[str]:
     return cnt
 
 
-def _viterbi_tokenize_counts(word: str, tokens: Sequence[str], token_cost: Dict[str, float], max_len: int) -> Counter[str]:
-    # Simple DP over substrings; tokens are strings.
+class _TrieNode:
+    __slots__ = ("children", "token")
+
+    def __init__(self):
+        self.children: Dict[str, "_TrieNode"] = {}
+        self.token: Optional[str] = None
+
+
+class _Trie:
+    """Trie for enumerating *all* token matches starting at a position.
+
+    This avoids O(n * max_len) substring creation + set lookups for Viterbi.
+    """
+
+    def __init__(self, tokens: Sequence[str]):
+        self.root = _TrieNode()
+        for t in tokens:
+            if not t:
+                continue
+            node = self.root
+            for ch in t:
+                nxt = node.children.get(ch)
+                if nxt is None:
+                    nxt = _TrieNode()
+                    node.children[ch] = nxt
+                node = nxt
+            node.token = t
+
+    def matches(self, s: str, i: int, max_len: int) -> Iterator[Tuple[str, int]]:
+        node = self.root
+        j = i
+        lim = min(len(s), i + max_len)
+        while j < lim:
+            nxt = node.children.get(s[j])
+            if nxt is None:
+                return
+            node = nxt
+            j += 1
+            if node.token is not None:
+                yield node.token, j
+
+
+def _viterbi_tokenize_counts(word: str, trie: _Trie, token_cost: Dict[str, float], max_len: int) -> Counter[str]:
+    """Viterbi over a single word using trie enumeration."""
     n = len(word)
     dp = [math.inf] * (n + 1)
-    bp = [None] * (n + 1)  # (prev, tok)
+    bp: List[Optional[Tuple[int, str]]] = [None] * (n + 1)  # (prev, tok)
     dp[0] = 0.0
-
-    tokset = set(tokens)
 
     for i in range(n):
         if dp[i] == math.inf:
             continue
-        for j in range(i + 1, min(n, i + max_len) + 1):
-            s = word[i:j]
-            if s in tokset:
-                c = token_cost[s]
-                if dp[i] + c < dp[j]:
-                    dp[j] = dp[i] + c
-                    bp[j] = (i, s)
+        for tok, j in trie.matches(word, i, max_len=max_len):
+            c = token_cost[tok]
+            nd = dp[i] + c
+            if nd < dp[j]:
+                dp[j] = nd
+                bp[j] = (i, tok)
 
     if dp[n] == math.inf:
         return Counter()
@@ -279,8 +354,29 @@ def _viterbi_tokenize_counts(word: str, tokens: Sequence[str], token_cost: Dict[
     return out
 
 
+# ---- multiprocessing helpers (fork-friendly) ----
+_MP_TRIE: Optional[_Trie] = None
+_MP_COST: Optional[Dict[str, float]] = None
+_MP_MAX_LEN: int = 16
+
+
+def _mp_init(trie: _Trie, cost: Dict[str, float], max_len: int) -> None:
+    global _MP_TRIE, _MP_COST, _MP_MAX_LEN
+    _MP_TRIE = trie
+    _MP_COST = cost
+    _MP_MAX_LEN = max_len
+
+
+def _mp_viterbi_counts(words: Sequence[str]) -> Counter[str]:
+    assert _MP_TRIE is not None and _MP_COST is not None
+    out: Counter[str] = Counter()
+    for w in words:
+        out.update(_viterbi_tokenize_counts(w, _MP_TRIE, _MP_COST, max_len=_MP_MAX_LEN))
+    return out
+
+
 def train_unigram(
-    texts: Sequence[str],
+    texts: Iterable[str],
     *,
     vocab_size: int,
     required_tokens: Sequence[str],
@@ -333,10 +429,32 @@ def train_unigram(
             break
 
         token_cost = {t: -math.log(max(probs.get(t, 1e-12), 1e-12)) for t in tokens}
-        vcounts: Counter[str] = Counter()
-        for w in sample_words:
-            vc = _viterbi_tokenize_counts(w, tokens, token_cost, max_len=max_len)
-            vcounts.update(vc)
+        trie = _Trie(tokens)
+
+        # Viterbi counting is the main bottleneck. Parallelize across words.
+        # We rely on Linux 'fork' to share the trie/cost dict cheaply.
+        nw = spec.num_workers
+        if nw <= 0:
+            try:
+                nw = max((os.cpu_count() or 2) - 1, 1)
+            except Exception:
+                nw = 1
+
+        if nw == 1 or len(sample_words) < 50_000:
+            vcounts: Counter[str] = Counter()
+            for w in sample_words:
+                vcounts.update(_viterbi_tokenize_counts(w, trie, token_cost, max_len=max_len))
+        else:
+            # Chunk the words to reduce IPC overhead.
+            chunk = max(len(sample_words) // (nw * 8), 10_000)
+            chunks = [sample_words[i : i + chunk] for i in range(0, len(sample_words), chunk)]
+
+            ctx = mp.get_context("fork") if hasattr(mp, "get_context") else mp
+            with ctx.Pool(processes=nw, initializer=_mp_init, initargs=(trie, token_cost, max_len)) as pool:
+                parts = pool.map(_mp_viterbi_counts, chunks)
+            vcounts = Counter()
+            for c in parts:
+                vcounts.update(c)
 
         # update probs
         probs = probs_from_counts(tokens, vcounts)
@@ -539,10 +657,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     ap.add_argument("--format", choices=["txt", "tsv", "jsonl", "parquet"], default="txt")
     ap.add_argument("--corpus", required=True)
     ap.add_argument("--text_key", default="text")
+    ap.add_argument("--waf_join", action="store_true", help="For WAF parquet with columns method/url/protocol/headers/body: build text on the fly")
     ap.add_argument("--max_samples", type=int, default=None)
     ap.add_argument("--outdir", required=True)
     ap.add_argument("--vocab_size", type=int, default=2048)
     ap.add_argument("--max_len", type=int, default=16)
+    ap.add_argument("--sample_words", type=int, default=200000)
+    ap.add_argument("--prune_iters", type=int, default=6)
+    ap.add_argument("--prune_frac", type=float, default=0.20)
+    ap.add_argument("--num_workers", type=int, default=0, help="0=auto, 1=single-process")
     ap.add_argument("--lowercase", action="store_true")
     ap.add_argument("--model_max_length", type=int, default=512)
     ap.add_argument("--seed", type=int, default=0)
@@ -551,15 +674,15 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     # Numeric allowlist (reuse your set).
     num_spec = NumNormSpec(allowed=sorted(hygiene.ALLOWED_NUMBERS))
 
-    # Load and preprocess corpus (stream, but store a manageable subset for training).
-    it = corpus_iter(args.format, args.corpus, args.max_samples, text_key=args.text_key)
-    texts: List[str] = []
-    for x in it:
-        px = preprocess(x, lowercase=args.lowercase, num_spec=num_spec)
-        if px:
-            texts.append(px)
-    if not texts:
-        raise ValueError("Empty corpus after preprocessing.")
+    # Stream and preprocess corpus; training performs its own reservoir sampling,
+    # so we do NOT materialize the whole corpus in memory.
+    it = corpus_iter(args.format, args.corpus, args.max_samples, text_key=args.text_key, waf_join=bool(args.waf_join))
+
+    def _preprocessed() -> Iterator[str]:
+        for x in it:
+            px = preprocess(x, lowercase=args.lowercase, num_spec=num_spec)
+            if px:
+                yield px
 
     # Required tokens: special + typed + buckets
     special = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
@@ -570,9 +693,16 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     for ch in hygiene.ascii_base_chars():
         required.append(ch)
 
-    train_spec = TrainSpec(rng_seed=args.seed, max_len=args.max_len)
+    train_spec = TrainSpec(
+        rng_seed=args.seed,
+        max_len=args.max_len,
+        sample_words=int(args.sample_words),
+        prune_iters=int(args.prune_iters),
+        prune_frac=float(args.prune_frac),
+        num_workers=int(args.num_workers),
+    )
     vocab, token_to_id = train_unigram(
-        texts,
+        _preprocessed(),
         vocab_size=args.vocab_size,
         required_tokens=required,
         max_len=args.max_len,
