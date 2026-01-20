@@ -2,16 +2,28 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from pathlib import Path
 
 import hydra
+from hydra.core.hydra_config import HydraConfig
 from omegaconf import DictConfig
+
+# Ensure repo root is on sys.path when running as a script.
+repo_root = Path(__file__).resolve().parents[1]
+if str(repo_root) not in sys.path:
+    sys.path.insert(0, str(repo_root))
 
 from scripts import train_waf_unigram as trainer
 
 
 def _cfg_to_args(cfg: DictConfig) -> argparse.Namespace:
+    dataset_choice = HydraConfig.get().runtime.choices.get("dataset")
+    if not dataset_choice:
+        raise ValueError("Missing dataset choice from Hydra overrides.")
     return argparse.Namespace(
-        dataset=cfg.dataset.name,
+        # Hydra stores config group choices here; avoids needing dataset.name in yaml.
+        dataset=dataset_choice,
         split=cfg.train.split,
         max_samples=cfg.train.max_samples,
         vocab_size=cfg.train.vocab_size,
