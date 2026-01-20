@@ -3,11 +3,13 @@ defaults:
   - _self_
 
 train:
+  algorithm: unigram
   split: train
   max_samples: null
   vocab_size: 2048
   model_max_length: 512
   max_piece_length: 16
+  wordpiece_max_input_chars: 100
   max_chars: null
   ascii_only: false
   streaming: false
