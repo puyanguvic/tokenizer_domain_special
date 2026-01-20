@@ -1,0 +1,26 @@
+defaults:
+  - dataset: waf
+  - _self_
+
+train:
+  split: train
+  max_samples: null
+  vocab_size: 2048
+  model_max_length: 512
+  max_piece_length: 16
+  max_chars: null
+  ascii_only: false
+  streaming: false
+  no_progress: false
+  allow_parallelism: false
+  auto_retry: true
+  verify: false
+
+hydra:
+  run:
+    dir: .
+  sweep:
+    dir: .
+  output_subdir: null
+  job:
+    chdir: false

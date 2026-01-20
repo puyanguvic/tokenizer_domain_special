@@ -1,0 +1,8 @@
+dataset:
+  name: phishing_email
+
+train:
+  vocab_size: 20000
+  max_chars: 4000
+  ascii_only: true
+  streaming: true
