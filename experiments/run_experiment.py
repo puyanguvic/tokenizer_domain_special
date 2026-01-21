@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from pathlib import Path
+from typing import Optional
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from cit_tokenizers.contract import ContractConfig
+from cit_tokenizers.corpus import export_dataset_corpus, resolve_dataset_key, resolve_dataset_path
+from cit_tokenizers.data import iter_text
+from cit_tokenizers.cit.trainer import CITTrainer, CITTrainerConfig
+from cit_tokenizers.baselines.bpe_hygiene.trainer import train_bpe_hygiene
+from cit_tokenizers.baselines.wordpiece_hygiene.trainer import train_wordpiece_hygiene
+from cit_tokenizers.baselines.unigram_hygiene.trainer import train_unigram_hygiene
+
+
+ALGORITHMS = ("cit", "bpeh", "wordpieceh", "unigramh")
+
+
+def parse_args() -> argparse.Namespace:
+    ap = argparse.ArgumentParser(description="Export a dataset to JSONL and train a tokenizer.")
+    ap.add_argument("--dataset", required=True, help="Dataset key (e.g., hdfs, phish_html, phishing_email, waf).")
+    ap.add_argument("--split", default="train", help="Dataset split to use.")
+    ap.add_argument("--algorithm", required=True, choices=ALGORITHMS)
+    ap.add_argument("--vocab-size", type=int, default=8192)
+    ap.add_argument("--min-frequency", type=int, default=10)
+    ap.add_argument("--model-max-length", type=int, default=512)
+    ap.add_argument("--max-samples", type=int, default=None)
+    ap.add_argument("--text-key", default=None, help="Override the text field used during export.")
+    ap.add_argument("--no-formatter", action="store_true", help="Disable dataset-specific formatting.")
+    ap.add_argument("--streaming", action="store_true", help="Stream from HF instead of full download.")
+    ap.add_argument("--overwrite", action="store_true", help="Overwrite existing corpus JSONL if present.")
+    ap.add_argument("--name", default=None, help="Tokenizer output dir name under tokenizers/.")
+    ap.add_argument("--outdir", default=None, help="Override full output directory path.")
+    ap.add_argument("--no-json-serialization", action="store_true")
+    ap.add_argument("--no-typed-hygiene", action="store_true")
+    ap.add_argument("--no-numeric-buckets", action="store_true")
+    ap.add_argument("--long-num-min-digits", type=int, default=6)
+    ap.add_argument("--cit-len-min", type=int, default=2)
+    ap.add_argument("--cit-len-max", type=int, default=24)
+    ap.add_argument("--cit-lambda-rd", type=float, default=0.0)
+    ap.add_argument(
+        "--cit-distortion-mode",
+        default="none",
+        choices=("none", "boundary_penalty"),
+    )
+    ap.add_argument("--cit-boundary-penalty", type=float, default=1.0)
+    ap.add_argument("--cit-sample-texts", type=int, default=200000, help="Set 0 to disable sampling.")
+    ap.add_argument("--wordpiece-prefix", default="##")
+    return ap.parse_args()
+
+
+def _resolve_outdir(repo_root: Path, dataset_key: str, algorithm: str, name: Optional[str], outdir: Optional[str]) -> Path:
+    if outdir:
+        return Path(outdir)
+    if name:
+        return repo_root / "tokenizers" / name
+    return repo_root / "tokenizers" / f"{dataset_key}_{algorithm}_tokenizer"
+
+
+def _ensure_corpus(
+    dataset_key: str,
+    split: str,
+    *,
+    cache_dir: Path,
+    corpus_dir: Path,
+    text_key: Optional[str],
+    max_samples: Optional[int],
+    streaming: bool,
+    use_formatter: bool,
+    overwrite: bool,
+) -> Path:
+    dataset_path = resolve_dataset_path(dataset_key)
+    corpus_name = f"{dataset_path.replace('/', '__')}_{split}.jsonl"
+    corpus_path = corpus_dir / corpus_name
+    if corpus_path.exists() and not overwrite:
+        if max_samples is not None:
+            print(f"[info] Using existing corpus at {corpus_path} (max_samples ignored).")
+        return corpus_path
+    return export_dataset_corpus(
+        dataset_key,
+        split=split,
+        out_dir=corpus_dir,
+        filename=corpus_name,
+        text_key=text_key,
+        cache_dir=cache_dir,
+        max_samples=max_samples,
+        streaming=streaming,
+        use_formatter=use_formatter,
+    )
+
+
+def _contract_from_args(args: argparse.Namespace) -> ContractConfig:
+    return ContractConfig(
+        enable_json_serialization=not args.no_json_serialization,
+        enable_typed_hygiene=not args.no_typed_hygiene,
+        enable_numeric_buckets=not args.no_numeric_buckets,
+        long_num_min_digits=int(args.long_num_min_digits),
+    )
+
+
+def _update_cit_max_length(outdir: Path, model_max_length: int) -> None:
+    cfg_path = outdir / "tokenizer_config.json"
+    if not cfg_path.exists():
+        return
+    data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["model_max_length"] = int(model_max_length)
+    cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+
+def main() -> None:
+    args = parse_args()
+    cache_dir = REPO_ROOT / "datasets" / "hf_cache"
+    corpus_dir = REPO_ROOT / "datasets" / "corpus"
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    corpus_dir.mkdir(parents=True, exist_ok=True)
+
+    dataset_key = resolve_dataset_key(args.dataset)
+    outdir = _resolve_outdir(REPO_ROOT, dataset_key, args.algorithm, args.name, args.outdir)
+    outdir.mkdir(parents=True, exist_ok=True)
+
+    print(f"[1/3] Exporting corpus for {dataset_key}:{args.split}")
+    corpus_path = _ensure_corpus(
+        dataset_key,
+        args.split,
+        cache_dir=cache_dir,
+        corpus_dir=corpus_dir,
+        text_key=args.text_key,
+        max_samples=args.max_samples,
+        streaming=args.streaming,
+        use_formatter=not args.no_formatter,
+        overwrite=args.overwrite,
+    )
+    print(f"[1/3] Corpus ready at {corpus_path}")
+
+    contract_cfg = _contract_from_args(args)
+    print(f"[2/3] Training {args.algorithm} tokenizer -> {outdir}")
+
+    if args.algorithm == "cit":
+        sample_texts = int(args.cit_sample_texts)
+        if sample_texts <= 0:
+            sample_texts = None
+        cfg = CITTrainerConfig(
+            vocab_size=int(args.vocab_size),
+            min_freq=int(args.min_frequency),
+            len_min=int(args.cit_len_min),
+            len_max=int(args.cit_len_max),
+            lambda_rd=float(args.cit_lambda_rd),
+            distortion_mode=args.cit_distortion_mode,
+            boundary_penalty=float(args.cit_boundary_penalty),
+            sample_texts=sample_texts,
+            contract=contract_cfg,
+        )
+        trainer = CITTrainer(cfg)
+        texts = iter_text(
+            str(corpus_path),
+            fmt="jsonl",
+            text_key="text",
+            max_samples=args.max_samples,
+        )
+        trainer.train_from_iterator(texts, outdir)
+        _update_cit_max_length(outdir, args.model_max_length)
+    elif args.algorithm == "bpeh":
+        train_bpe_hygiene(
+            corpus=str(corpus_path),
+            outdir=str(outdir),
+            vocab_size=int(args.vocab_size),
+            contract_cfg=contract_cfg,
+            fmt="jsonl",
+            text_key="text",
+            max_samples=args.max_samples,
+            min_frequency=int(args.min_frequency),
+            model_max_length=int(args.model_max_length),
+        )
+    elif args.algorithm == "wordpieceh":
+        train_wordpiece_hygiene(
+            corpus=str(corpus_path),
+            outdir=str(outdir),
+            vocab_size=int(args.vocab_size),
+            contract_cfg=contract_cfg,
+            fmt="jsonl",
+            text_key="text",
+            max_samples=args.max_samples,
+            min_frequency=int(args.min_frequency),
+            continuing_subword_prefix=args.wordpiece_prefix,
+            model_max_length=int(args.model_max_length),
+        )
+    elif args.algorithm == "unigramh":
+        train_unigram_hygiene(
+            corpus=str(corpus_path),
+            outdir=str(outdir),
+            vocab_size=int(args.vocab_size),
+            contract_cfg=contract_cfg,
+            fmt="jsonl",
+            text_key="text",
+            max_samples=args.max_samples,
+            min_frequency=int(args.min_frequency),
+            model_max_length=int(args.model_max_length),
+        )
+    else:
+        raise ValueError(f"Unknown algorithm '{args.algorithm}'")
+
+    print(f"[3/3] Saved tokenizer to {outdir}")
+
+
+if __name__ == "__main__":
+    main()

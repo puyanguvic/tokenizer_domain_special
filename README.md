@@ -38,7 +38,13 @@ print(tok.tokenize("GET /index.php?id=123&x=1"))
 This repo supports a simple experiment workflow.
 Downloaded datasets and cache live under `datasets/` (e.g., `datasets/hf_cache`), and tokenizer outputs should be placed in `tokenizers/` with a descriptive name.
 
-Export a Hugging Face dataset to a CIT-friendly JSONL corpus, then train:
+One-command experiment script (exports + trains):
+
+```bash
+python experiments/run_experiment.py --dataset hdfs --algorithm cit --name hdfs_cit_tokenizer
+```
+
+Manual steps (export a Hugging Face dataset to JSONL, then train):
 
 ```bash
 python - <<'PY'
