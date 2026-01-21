@@ -306,22 +306,41 @@ class CITTrainer:
         return vocab
 
     def _write_artifact(self, outdir: Path, art: CITArtifact) -> None:
+        """Write a *data-only* artifact directory.
+
+        Security note
+        -------------
+        Earlier versions wrote Python modules into the artifact directory and
+        relied on Transformers' `trust_remote_code=True` autoload mechanism.
+        This is convenient but undesirable in many production/security settings.
+
+        CIT artifacts are now *pure data*: loading never executes code from the
+        artifact. The runtime implementation is delivered via the installed
+        `cit_tokenizers` Python package (i.e., your environment / dependency
+        manager), and users load with:
+
+            from cit_tokenizers.tokenization_cit import CITTokenizer
+            tok = CITTokenizer.from_pretrained(outdir)
+        """
+
         # Core artifact JSON (used by CITRuntime)
         (outdir / "cit_artifact.json").write_text(art.dumps(), encoding="utf-8")
 
-        # A minimal transformers-compatible folder structure.
-        # AutoTokenizer can load this with trust_remote_code=True.
+        # Optional: a minimal tokenizer_config.json for model_max_length defaults.
+        # (No `auto_map` and no embedded Python source files.)
         (outdir / "tokenizer_config.json").write_text(
             json.dumps(
                 {
-                    "tokenizer_class": "CITTokenizer",
                     "model_max_length": 512,
-                    "auto_map": {"AutoTokenizer": ["tokenization_cit.CITTokenizer", None]},
+                    "padding_side": "right",
+                    "truncation_side": "right",
                 },
                 indent=2,
             ),
             encoding="utf-8",
         )
+
+        # Standard HF special token map (data-only).
         (outdir / "special_tokens_map.json").write_text(
             json.dumps(
                 {
@@ -336,23 +355,3 @@ class CITTrainer:
             ),
             encoding="utf-8",
         )
-        # Provide the tokenizer implementation alongside the artifact.
-        pkg_dir = outdir / "cit_tokenizers"
-        pkg_dir.mkdir(exist_ok=True)
-        (pkg_dir / "__init__.py").write_text("# Local package stub for AutoTokenizer remote code\n", encoding="utf-8")
-        src_root = Path(__file__).resolve().parents[1]
-        # Root module for AutoTokenizer dynamic import.
-        (outdir / "tokenization_cit.py").write_text(
-            (src_root / "tokenization_cit.py").read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
-        for rel_path in ["tokenization_cit.py", "contract.py", "json_serialize.py", "hygiene.py"]:
-            (pkg_dir / rel_path).write_text((src_root / rel_path).read_text(encoding="utf-8"), encoding="utf-8")
-        cit_dir = pkg_dir / "cit"
-        cit_dir.mkdir(exist_ok=True)
-        (cit_dir / "__init__.py").write_text("", encoding="utf-8")
-        for rel_path in ["runtime.py", "compiler.py"]:
-            (cit_dir / rel_path).write_text(
-                (src_root / "cit" / rel_path).read_text(encoding="utf-8"),
-                encoding="utf-8",
-            )

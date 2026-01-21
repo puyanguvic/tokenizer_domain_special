@@ -1,11 +1,13 @@
 """Transformers-compatible tokenizer for CIT.
 
-This module lets a CIT artifact directory be loaded by Hugging Face:
+This module provides a Transformers-compatible tokenizer for *data-only* CIT artifacts.
+
+Load artifacts without executing any code from the artifact directory:
 
 ```python
-from transformers import AutoTokenizer
+from cit_tokenizers.tokenization_cit import CITTokenizer
 
-tok = AutoTokenizer.from_pretrained("/path/to/cit_artifact", trust_remote_code=True)
+tok = CITTokenizer.from_pretrained("/path/to/cit_artifact")
 ```
 
 It intentionally implements the minimal API surface needed for encoder-only

@@ -60,7 +60,7 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--cit-symbol-ngram-min", type=int, default=2)
     ap.add_argument("--cit-symbol-ngram-max", type=int, default=None)
     ap.add_argument("--wordpiece-prefix", default="##")
-    ap.add_argument("--verify", action="store_true", help="Load with AutoTokenizer and run an example.")
+    ap.add_argument("--verify", action="store_true", help="Load the trained tokenizer and run an example.")
     ap.add_argument("--example", default=None, help="Example text to tokenize after training.")
     return ap.parse_args()
 
@@ -79,40 +79,6 @@ def _tokenizer_exists(outdir: Path, algorithm: str) -> bool:
     if algorithm == "cit":
         return (outdir / "cit_artifact.json").exists()
     return (outdir / "tokenizer.json").exists()
-
-
-def _ensure_cit_autoload(outdir: Path) -> None:
-    cfg_path = outdir / "tokenizer_config.json"
-    data: dict = {}
-    if cfg_path.exists():
-        data = json.loads(cfg_path.read_text(encoding="utf-8"))
-    data["tokenizer_class"] = "CITTokenizer"
-    data.setdefault("model_max_length", 512)
-    auto_map = data.get("auto_map") or {}
-    auto_map["AutoTokenizer"] = ["tokenization_cit.CITTokenizer", None]
-    data["auto_map"] = auto_map
-    cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-
-    root_tok = outdir / "tokenization_cit.py"
-    root_tok.write_text((REPO_ROOT / "cit_tokenizers" / "tokenization_cit.py").read_text(encoding="utf-8"), encoding="utf-8")
-
-    pkg_dir = outdir / "cit_tokenizers"
-    pkg_dir.mkdir(exist_ok=True)
-    (pkg_dir / "__init__.py").write_text(
-        "# Local package stub for AutoTokenizer remote code\n",
-        encoding="utf-8",
-    )
-    src_root = REPO_ROOT / "cit_tokenizers"
-    for rel_path in ["tokenization_cit.py", "contract.py", "json_serialize.py", "hygiene.py"]:
-        (pkg_dir / rel_path).write_text((src_root / rel_path).read_text(encoding="utf-8"), encoding="utf-8")
-    cit_dir = pkg_dir / "cit"
-    cit_dir.mkdir(exist_ok=True)
-    (cit_dir / "__init__.py").write_text("", encoding="utf-8")
-    for rel_path in ["runtime.py", "compiler.py"]:
-        (cit_dir / rel_path).write_text(
-            (src_root / "cit" / rel_path).read_text(encoding="utf-8"),
-            encoding="utf-8",
-        )
 
 
 def _ensure_corpus(
@@ -268,13 +234,16 @@ def main() -> None:
         print(f"[3/3] Saved tokenizer to {outdir}")
 
     if args.verify:
-        from transformers import AutoTokenizer
-
         example = args.example or "GET /index.html?x=1 HTTP/1.1"
-        trust_remote_code = args.algorithm == "cit"
         if args.algorithm == "cit":
-            _ensure_cit_autoload(outdir)
-        tok = AutoTokenizer.from_pretrained(str(outdir), trust_remote_code=trust_remote_code)
+            # CIT artifacts are data-only; load using the installed package implementation.
+            from cit_tokenizers.tokenization_cit import CITTokenizer
+
+            tok = CITTokenizer.from_pretrained(str(outdir))
+        else:
+            from transformers import AutoTokenizer
+
+            tok = AutoTokenizer.from_pretrained(str(outdir))
         tokens = tok.tokenize(example)
         print("[verify] example:", example)
         print("[verify] tokens:", tokens)
