@@ -22,15 +22,44 @@ pip install -e .
 1) Train a baseline WordPiece+Hygiene tokenizer:
 
 ```bash
-cit-train-wordpieceh --corpus path/to/corpus.txt --outdir out/wp_hygiene --vocab-size 8192
+cit-train-wordpieceh --corpus path/to/corpus.txt --outdir tokenizers/wp_hygiene_demo --vocab-size 8192
 ```
 
 2) Load with Hugging Face:
 
 ```python
 from transformers import AutoTokenizer
-tok = AutoTokenizer.from_pretrained("out/wp_hygiene", use_fast=True)
+tok = AutoTokenizer.from_pretrained("tokenizers/wp_hygiene_demo", use_fast=True)
 print(tok.tokenize("GET /index.php?id=123&x=1"))
+```
+
+## Running experiments
+
+This repo supports a simple experiment workflow.
+Downloaded datasets and cache live under `datasets/` (e.g., `datasets/hf_cache`), and tokenizer outputs should be placed in `tokenizers/` with a descriptive name.
+
+Export a Hugging Face dataset to a CIT-friendly JSONL corpus, then train:
+
+```bash
+python - <<'PY'
+from cit_tokenizers.corpus import export_dataset_corpus
+path = export_dataset_corpus("hdfs", split="train", cache_dir="datasets/hf_cache")
+print(path)
+PY
+
+cit-train-cit \
+  --corpus datasets/corpus/logfit-project__HDFS_v1_train.jsonl \
+  --format jsonl \
+  --text-key text \
+  --outdir tokenizers/hdfs_cit_tokenizer \
+  --vocab-size 8192
+
+cit-train-wordpieceh \
+  --corpus datasets/corpus/logfit-project__HDFS_v1_train.jsonl \
+  --format jsonl \
+  --text-key text \
+  --outdir tokenizers/hdfs_wordpiece_tokenizer \
+  --vocab-size 8192
 ```
 
 ## CIT core code map (paper ↔ code)
@@ -82,22 +111,22 @@ artifact in `outdir/` (including `tokenizer.json`, `tokenizer_config.json`, `spe
 
 ```bash
 # 1) Train CIT
-cit-train --corpus data.txt --outdir out/cit --vocab-size 8192 --format txt
+cit-train-cit --corpus data.txt --outdir tokenizers/cit_demo --vocab-size 8192 --format txt
 
 # 2) Train baseline: BPE + Hygiene
-cit-bpeh-train --corpus data.txt --outdir out/bpe_hyg --vocab-size 8192 --format txt
+cit-train-bpeh --corpus data.txt --outdir tokenizers/bpe_hyg_demo --vocab-size 8192 --format txt
 
 # 3) Train baseline: WordPiece + Hygiene
-cit-wph-train --corpus data.txt --outdir out/wp_hyg --vocab-size 8192 --format txt
+cit-train-wordpieceh --corpus data.txt --outdir tokenizers/wp_hyg_demo --vocab-size 8192 --format txt
 
 # 4) Train baseline: Unigram + Hygiene
-cit-unih-train --corpus data.txt --outdir out/uni_hyg --vocab-size 8192 --format txt
+cit-train-unigramh --corpus data.txt --outdir tokenizers/uni_hyg_demo --vocab-size 8192 --format txt
 ```
 
 ### Loading with Transformers
 
 ```python
 from transformers import AutoTokenizer
-tok = AutoTokenizer.from_pretrained("out/cit")
+tok = AutoTokenizer.from_pretrained("tokenizers/cit_demo")
 print(tok.tokenize("GET /index.html?x=1 HTTP/1.1"))
 ```
