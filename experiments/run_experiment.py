@@ -42,8 +42,13 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--no-typed-hygiene", action="store_true")
     ap.add_argument("--no-numeric-buckets", action="store_true")
     ap.add_argument("--long-num-min-digits", type=int, default=6)
-    ap.add_argument("--cit-len-min", type=int, default=2)
+    ap.add_argument("--cit-preset", choices=("default", "http", "waf"), default="default")
+    ap.add_argument("--cit-len-min", type=int, default=None)
     ap.add_argument("--cit-len-max", type=int, default=24)
+    char_group = ap.add_mutually_exclusive_group()
+    char_group.add_argument("--cit-include-chars", dest="cit_include_chars", action="store_true")
+    char_group.add_argument("--no-cit-include-chars", dest="cit_include_chars", action="store_false")
+    ap.set_defaults(cit_include_chars=None)
     ap.add_argument("--cit-lambda-rd", type=float, default=0.0)
     ap.add_argument(
         "--cit-distortion-mode",
@@ -52,7 +57,11 @@ def parse_args() -> argparse.Namespace:
     )
     ap.add_argument("--cit-boundary-penalty", type=float, default=1.0)
     ap.add_argument("--cit-sample-texts", type=int, default=200000, help="Set 0 to disable sampling.")
+    ap.add_argument("--cit-symbol-ngram-min", type=int, default=2)
+    ap.add_argument("--cit-symbol-ngram-max", type=int, default=None)
     ap.add_argument("--wordpiece-prefix", default="##")
+    ap.add_argument("--verify", action="store_true", help="Load with AutoTokenizer and run an example.")
+    ap.add_argument("--example", default=None, help="Example text to tokenize after training.")
     return ap.parse_args()
 
 
@@ -62,6 +71,48 @@ def _resolve_outdir(repo_root: Path, dataset_key: str, algorithm: str, name: Opt
     if name:
         return repo_root / "tokenizers" / name
     return repo_root / "tokenizers" / f"{dataset_key}_{algorithm}_tokenizer"
+
+
+def _tokenizer_exists(outdir: Path, algorithm: str) -> bool:
+    if not outdir.exists():
+        return False
+    if algorithm == "cit":
+        return (outdir / "cit_artifact.json").exists()
+    return (outdir / "tokenizer.json").exists()
+
+
+def _ensure_cit_autoload(outdir: Path) -> None:
+    cfg_path = outdir / "tokenizer_config.json"
+    data: dict = {}
+    if cfg_path.exists():
+        data = json.loads(cfg_path.read_text(encoding="utf-8"))
+    data["tokenizer_class"] = "CITTokenizer"
+    data.setdefault("model_max_length", 512)
+    auto_map = data.get("auto_map") or {}
+    auto_map["AutoTokenizer"] = ["tokenization_cit.CITTokenizer", None]
+    data["auto_map"] = auto_map
+    cfg_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+
+    root_tok = outdir / "tokenization_cit.py"
+    root_tok.write_text((REPO_ROOT / "cit_tokenizers" / "tokenization_cit.py").read_text(encoding="utf-8"), encoding="utf-8")
+
+    pkg_dir = outdir / "cit_tokenizers"
+    pkg_dir.mkdir(exist_ok=True)
+    (pkg_dir / "__init__.py").write_text(
+        "# Local package stub for AutoTokenizer remote code\n",
+        encoding="utf-8",
+    )
+    src_root = REPO_ROOT / "cit_tokenizers"
+    for rel_path in ["tokenization_cit.py", "contract.py", "json_serialize.py", "hygiene.py"]:
+        (pkg_dir / rel_path).write_text((src_root / rel_path).read_text(encoding="utf-8"), encoding="utf-8")
+    cit_dir = pkg_dir / "cit"
+    cit_dir.mkdir(exist_ok=True)
+    (cit_dir / "__init__.py").write_text("", encoding="utf-8")
+    for rel_path in ["runtime.py", "compiler.py"]:
+        (cit_dir / rel_path).write_text(
+            (src_root / "cit" / rel_path).read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
 
 
 def _ensure_corpus(
@@ -123,90 +174,110 @@ def main() -> None:
 
     dataset_key = resolve_dataset_key(args.dataset)
     outdir = _resolve_outdir(REPO_ROOT, dataset_key, args.algorithm, args.name, args.outdir)
-    outdir.mkdir(parents=True, exist_ok=True)
+    already_trained = _tokenizer_exists(outdir, args.algorithm)
 
-    print(f"[1/3] Exporting corpus for {dataset_key}:{args.split}")
-    corpus_path = _ensure_corpus(
-        dataset_key,
-        args.split,
-        cache_dir=cache_dir,
-        corpus_dir=corpus_dir,
-        text_key=args.text_key,
-        max_samples=args.max_samples,
-        streaming=args.streaming,
-        use_formatter=not args.no_formatter,
-        overwrite=args.overwrite,
-    )
-    print(f"[1/3] Corpus ready at {corpus_path}")
-
-    contract_cfg = _contract_from_args(args)
-    print(f"[2/3] Training {args.algorithm} tokenizer -> {outdir}")
-
-    if args.algorithm == "cit":
-        sample_texts = int(args.cit_sample_texts)
-        if sample_texts <= 0:
-            sample_texts = None
-        cfg = CITTrainerConfig(
-            vocab_size=int(args.vocab_size),
-            min_freq=int(args.min_frequency),
-            len_min=int(args.cit_len_min),
-            len_max=int(args.cit_len_max),
-            lambda_rd=float(args.cit_lambda_rd),
-            distortion_mode=args.cit_distortion_mode,
-            boundary_penalty=float(args.cit_boundary_penalty),
-            sample_texts=sample_texts,
-            contract=contract_cfg,
-        )
-        trainer = CITTrainer(cfg)
-        texts = iter_text(
-            str(corpus_path),
-            fmt="jsonl",
-            text_key="text",
-            max_samples=args.max_samples,
-        )
-        trainer.train_from_iterator(texts, outdir)
-        _update_cit_max_length(outdir, args.model_max_length)
-    elif args.algorithm == "bpeh":
-        train_bpe_hygiene(
-            corpus=str(corpus_path),
-            outdir=str(outdir),
-            vocab_size=int(args.vocab_size),
-            contract_cfg=contract_cfg,
-            fmt="jsonl",
-            text_key="text",
-            max_samples=args.max_samples,
-            min_frequency=int(args.min_frequency),
-            model_max_length=int(args.model_max_length),
-        )
-    elif args.algorithm == "wordpieceh":
-        train_wordpiece_hygiene(
-            corpus=str(corpus_path),
-            outdir=str(outdir),
-            vocab_size=int(args.vocab_size),
-            contract_cfg=contract_cfg,
-            fmt="jsonl",
-            text_key="text",
-            max_samples=args.max_samples,
-            min_frequency=int(args.min_frequency),
-            continuing_subword_prefix=args.wordpiece_prefix,
-            model_max_length=int(args.model_max_length),
-        )
-    elif args.algorithm == "unigramh":
-        train_unigram_hygiene(
-            corpus=str(corpus_path),
-            outdir=str(outdir),
-            vocab_size=int(args.vocab_size),
-            contract_cfg=contract_cfg,
-            fmt="jsonl",
-            text_key="text",
-            max_samples=args.max_samples,
-            min_frequency=int(args.min_frequency),
-            model_max_length=int(args.model_max_length),
-        )
+    if args.verify and already_trained:
+        print(f"[skip] Tokenizer exists at {outdir}; skipping training.")
     else:
-        raise ValueError(f"Unknown algorithm '{args.algorithm}'")
+        outdir.mkdir(parents=True, exist_ok=True)
+        print(f"[1/3] Exporting corpus for {dataset_key}:{args.split}")
+        corpus_path = _ensure_corpus(
+            dataset_key,
+            args.split,
+            cache_dir=cache_dir,
+            corpus_dir=corpus_dir,
+            text_key=args.text_key,
+            max_samples=args.max_samples,
+            streaming=args.streaming,
+            use_formatter=not args.no_formatter,
+            overwrite=args.overwrite,
+        )
+        print(f"[1/3] Corpus ready at {corpus_path}")
 
-    print(f"[3/3] Saved tokenizer to {outdir}")
+        contract_cfg = _contract_from_args(args)
+        print(f"[2/3] Training {args.algorithm} tokenizer -> {outdir}")
+
+        if args.algorithm == "cit":
+            sample_texts = int(args.cit_sample_texts)
+            if sample_texts <= 0:
+                sample_texts = None
+            cfg = CITTrainerConfig(
+                vocab_size=int(args.vocab_size),
+                min_freq=int(args.min_frequency),
+                len_min=args.cit_len_min,
+                len_max=int(args.cit_len_max),
+                lambda_rd=float(args.cit_lambda_rd),
+                distortion_mode=args.cit_distortion_mode,
+                boundary_penalty=float(args.cit_boundary_penalty),
+                sample_texts=sample_texts,
+                preset=args.cit_preset,
+                include_char_vocab=args.cit_include_chars,
+                symbol_ngram_min_len=int(args.cit_symbol_ngram_min),
+                symbol_ngram_max_len=args.cit_symbol_ngram_max,
+                contract=contract_cfg,
+            )
+            trainer = CITTrainer(cfg)
+            texts = iter_text(
+                str(corpus_path),
+                fmt="jsonl",
+                text_key="text",
+                max_samples=args.max_samples,
+            )
+            trainer.train_from_iterator(texts, outdir)
+            _update_cit_max_length(outdir, args.model_max_length)
+        elif args.algorithm == "bpeh":
+            train_bpe_hygiene(
+                corpus=str(corpus_path),
+                outdir=str(outdir),
+                vocab_size=int(args.vocab_size),
+                contract_cfg=contract_cfg,
+                fmt="jsonl",
+                text_key="text",
+                max_samples=args.max_samples,
+                min_frequency=int(args.min_frequency),
+                model_max_length=int(args.model_max_length),
+            )
+        elif args.algorithm == "wordpieceh":
+            train_wordpiece_hygiene(
+                corpus=str(corpus_path),
+                outdir=str(outdir),
+                vocab_size=int(args.vocab_size),
+                contract_cfg=contract_cfg,
+                fmt="jsonl",
+                text_key="text",
+                max_samples=args.max_samples,
+                min_frequency=int(args.min_frequency),
+                continuing_subword_prefix=args.wordpiece_prefix,
+                model_max_length=int(args.model_max_length),
+            )
+        elif args.algorithm == "unigramh":
+            train_unigram_hygiene(
+                corpus=str(corpus_path),
+                outdir=str(outdir),
+                vocab_size=int(args.vocab_size),
+                contract_cfg=contract_cfg,
+                fmt="jsonl",
+                text_key="text",
+                max_samples=args.max_samples,
+                min_frequency=int(args.min_frequency),
+                model_max_length=int(args.model_max_length),
+            )
+        else:
+            raise ValueError(f"Unknown algorithm '{args.algorithm}'")
+
+        print(f"[3/3] Saved tokenizer to {outdir}")
+
+    if args.verify:
+        from transformers import AutoTokenizer
+
+        example = args.example or "GET /index.html?x=1 HTTP/1.1"
+        trust_remote_code = args.algorithm == "cit"
+        if args.algorithm == "cit":
+            _ensure_cit_autoload(outdir)
+        tok = AutoTokenizer.from_pretrained(str(outdir), trust_remote_code=trust_remote_code)
+        tokens = tok.tokenize(example)
+        print("[verify] example:", example)
+        print("[verify] tokens:", tokens)
 
 
 if __name__ == "__main__":

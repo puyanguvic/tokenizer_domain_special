@@ -14,40 +14,37 @@ classification and benchmarking.
 
 from __future__ import annotations
 
-import json
 import os
 from typing import Any, Dict, List, Optional, Tuple
 
 from transformers.tokenization_utils import PreTrainedTokenizer
 
-from .cit.runtime import CITArtifact
+from cit_tokenizers.cit.runtime import CITArtifact, CITRuntime
 
 
 class CITTokenizer(PreTrainedTokenizer):
     """A deterministic tokenizer backed by a compiled CIT matcher."""
 
+    vocab_files_names = {"vocab_file": "cit_artifact.json"}
     model_input_names = ["input_ids", "attention_mask"]
 
     def __init__(
         self,
         vocab_file: str,
-        contract_file: str,
-        matcher_file: str,
         model_max_length: int = 512,
         **kwargs: Any,
     ) -> None:
-        self._artifact = CITArtifact.load(vocab_file=vocab_file, contract_file=contract_file, matcher_file=matcher_file)
+        with open(vocab_file, "r", encoding="utf-8") as f:
+            self._artifact = CITArtifact.loads(f.read())
+        self._runtime = CITRuntime(self._artifact)
         self.vocab = self._artifact.vocab
-        self.ids_to_tokens = {i: t for t, i in self.vocab.items()}
-        super().__init__(
-            model_max_length=model_max_length,
-            pad_token="[PAD]",
-            unk_token="[UNK]",
-            cls_token="[CLS]",
-            sep_token="[SEP]",
-            mask_token="[MASK]",
-            **kwargs,
-        )
+        self.ids_to_tokens = {i: t for i, t in enumerate(self._artifact.id_to_token)}
+        kwargs.setdefault("pad_token", "[PAD]")
+        kwargs.setdefault("unk_token", "[UNK]")
+        kwargs.setdefault("cls_token", "[CLS]")
+        kwargs.setdefault("sep_token", "[SEP]")
+        kwargs.setdefault("mask_token", "[MASK]")
+        super().__init__(model_max_length=model_max_length, **kwargs)
 
     @property
     def vocab_size(self) -> int:  # type: ignore[override]
@@ -57,7 +54,8 @@ class CITTokenizer(PreTrainedTokenizer):
         return dict(self.vocab)
 
     def _tokenize(self, text: str) -> List[str]:  # type: ignore[override]
-        return self._artifact.tokenize(text)
+        ids = self._runtime.encode(text)
+        return [self.ids_to_tokens.get(i, self.unk_token) for i in ids]
 
     def _convert_token_to_id(self, token: str) -> int:  # type: ignore[override]
         return self.vocab.get(token, self.vocab.get(self.unk_token, 1))
@@ -81,13 +79,7 @@ class CITTokenizer(PreTrainedTokenizer):
 
     def save_vocabulary(self, save_directory: str, filename_prefix: Optional[str] = None) -> Tuple[str, ...]:  # type: ignore[override]
         os.makedirs(save_directory, exist_ok=True)
-        vocab_path = os.path.join(save_directory, (filename_prefix or "") + "vocab.json")
-        contract_path = os.path.join(save_directory, (filename_prefix or "") + "contract.json")
-        matcher_path = os.path.join(save_directory, (filename_prefix or "") + "matcher.json")
-        with open(vocab_path, "w", encoding="utf-8") as f:
-            json.dump(self.vocab, f, ensure_ascii=False, indent=2)
-        with open(contract_path, "w", encoding="utf-8") as f:
-            json.dump(self._artifact.contract_cfg.to_dict(), f, ensure_ascii=False, indent=2)
-        with open(matcher_path, "w", encoding="utf-8") as f:
-            json.dump(self._artifact.matcher.to_dict(), f, ensure_ascii=False)
-        return (vocab_path, contract_path, matcher_path)
+        artifact_path = os.path.join(save_directory, (filename_prefix or "") + "cit_artifact.json")
+        with open(artifact_path, "w", encoding="utf-8") as f:
+            f.write(self._artifact.dumps())
+        return (artifact_path,)

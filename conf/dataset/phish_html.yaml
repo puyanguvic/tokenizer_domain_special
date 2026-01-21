@@ -1,8 +1,0 @@
-dataset:
-  name: phish_html
-
-train:
-  vocab_size: 32768
-  max_chars: 4000
-  ascii_only: true
-  streaming: true

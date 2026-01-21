@@ -1,8 +1,0 @@
-dataset:
-  name: hdfs
-
-train:
-  vocab_size: 8192
-  max_chars: 512
-  ascii_only: true
-  streaming: false

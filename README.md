@@ -44,6 +44,8 @@ One-command experiment script (exports + trains):
 python experiments/run_experiment.py --dataset hdfs --algorithm cit --name hdfs_cit_tokenizer
 ```
 
+For structured HTTP/WAF logs, add `--cit-preset http` to enable symbol-aware boundaries and character fallback.
+
 Manual steps (export a Hugging Face dataset to JSONL, then train):
 
 ```bash

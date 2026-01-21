@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from ..contract import Contract, ContractConfig
-from .compiler import CompiledMatcher
+from .compiler import CompiledMatcher, compile_trie
 from .runtime import CITArtifact
 
 
@@ -21,27 +21,52 @@ def _default_boundaries() -> List[str]:
     return list(" \t\n:;,=&?/ #%()[]{}<>\"'|")
 
 
+def _http_boundaries() -> List[str]:
+    # Structured HTTP/log-like boundaries.
+    return list(" \t\n=,:&?/ #%()[]{}<>\"'|.-_\\+*;!$")
+
+
+def _boundary_preset(name: str) -> List[str]:
+    key = name.strip().lower()
+    if key in ("default", "base"):
+        return _default_boundaries()
+    if key in ("http", "waf"):
+        return _http_boundaries()
+    raise ValueError(f"Unknown boundary preset '{name}'")
+
+
 @dataclass
 class CITTrainerConfig:
     """Build configuration for CIT."""
 
     vocab_size: int = 8192
     min_freq: int = 10
-    len_min: int = 2
+    len_min: Optional[int] = None
     len_max: int = 24
     boundaries: Optional[List[str]] = None
+    preset: str = "default"
     lambda_rd: float = 0.0
     seed: int = 0
     sample_texts: Optional[int] = 200_000
     # Distortion proxy options
     distortion_mode: str = "none"  # 'none' or 'boundary_penalty'
     boundary_penalty: float = 1.0
+    include_char_vocab: Optional[bool] = None
+    symbol_ngram_min_len: int = 2
+    symbol_ngram_max_len: Optional[int] = None
     # Contract
     contract: ContractConfig = ContractConfig()
 
     def __post_init__(self) -> None:
+        preset = (self.preset or "default").strip().lower()
         if self.boundaries is None:
-            self.boundaries = _default_boundaries()
+            self.boundaries = _boundary_preset(preset)
+        if self.include_char_vocab is None:
+            self.include_char_vocab = preset in ("http", "waf")
+        if self.symbol_ngram_max_len is None:
+            self.symbol_ngram_max_len = 4 if preset in ("http", "waf") else 0
+        if self.len_min is None:
+            self.len_min = 1 if preset in ("http", "waf") else 2
         if self.len_min < 1 or self.len_max < self.len_min:
             raise ValueError("Invalid candidate length range")
 
@@ -101,10 +126,18 @@ class CITTrainer:
         cand_freq = self._extract_candidates(proc)
 
         # 3) Greedy induction
-        vocab = self._induce_vocab(proc, cand_freq, additional_special_tokens=additional_special_tokens)
+        char_vocab = None
+        if self.cfg.include_char_vocab:
+            char_vocab = sorted({ch for s in proc for ch in s})
+        vocab = self._induce_vocab(
+            proc,
+            cand_freq,
+            additional_special_tokens=additional_special_tokens,
+            char_vocab=char_vocab,
+        )
 
         # 4) Compile matcher and write artifact
-        matcher = CompiledMatcher.compile(vocab=vocab, max_token_len=self.cfg.len_max)
+        matcher = compile_trie(vocab.items())
         art = CITArtifact(
             vocab=vocab,
             matcher=matcher,
@@ -125,6 +158,11 @@ class CITTrainer:
         """
 
         boundaries = set(self.cfg.boundaries or [])
+        symbol_chars = {ch for ch in boundaries if not ch.isspace()}
+        min_sym = int(self.cfg.symbol_ngram_min_len)
+        max_sym = int(self.cfg.symbol_ngram_max_len)
+        if max_sym < min_sym:
+            max_sym = 0
         freq: Dict[str, int] = {}
         for s in texts:
             n = len(s)
@@ -132,6 +170,32 @@ class CITTrainer:
             while i < n:
                 # skip boundaries
                 if s[i] in boundaries:
+                    # optional: add symbol n-gram candidates from boundary runs
+                    if max_sym > 0 and symbol_chars:
+                        j = i
+                        while j < n and s[j] in boundaries:
+                            j += 1
+                        k = i
+                        while k < j:
+                            if s[k] not in symbol_chars:
+                                k += 1
+                                continue
+                            r = k
+                            while r < j and s[r] in symbol_chars:
+                                r += 1
+                            seg = s[k:r]
+                            L = len(seg)
+                            max_b = min(L, max_sym)
+                            for a in range(L):
+                                b_start = a + min_sym
+                                if b_start > L:
+                                    continue
+                                for b in range(b_start, min(L, a + max_b) + 1):
+                                    tok = seg[a:b]
+                                    freq[tok] = freq.get(tok, 0) + 1
+                            k = r
+                        i = j
+                        continue
                     i += 1
                     continue
 
@@ -155,7 +219,12 @@ class CITTrainer:
         out = {t: c for t, c in freq.items() if c >= self.cfg.min_freq and t and t not in self.SPECIAL_TOKENS}
         return out
 
-    def _baseline_vocab(self, additional_special_tokens: Optional[Sequence[str]]) -> Dict[str, int]:
+    def _baseline_vocab(
+        self,
+        additional_special_tokens: Optional[Sequence[str]],
+        *,
+        char_vocab: Optional[Sequence[str]] = None,
+    ) -> Dict[str, int]:
         vocab: Dict[str, int] = {}
         idx = 0
         for tok in list(self.SPECIAL_TOKENS) + list(additional_special_tokens or []):
@@ -167,6 +236,11 @@ class CITTrainer:
             if t not in vocab:
                 vocab[t] = idx
                 idx += 1
+        if char_vocab:
+            for ch in char_vocab:
+                if ch not in vocab:
+                    vocab[ch] = idx
+                    idx += 1
         return vocab
 
     def _distortion_proxy(self, token: str) -> float:
@@ -192,6 +266,7 @@ class CITTrainer:
         cand_freq: Dict[str, int],
         *,
         additional_special_tokens: Optional[Sequence[str]],
+        char_vocab: Optional[Sequence[str]] = None,
     ) -> Dict[str, int]:
         """Greedy gain–distortion selection.
 
@@ -203,7 +278,7 @@ class CITTrainer:
         a meaningful rate signal.
         """
 
-        vocab = self._baseline_vocab(additional_special_tokens)
+        vocab = self._baseline_vocab(additional_special_tokens, char_vocab=char_vocab)
         budget = self.cfg.vocab_size
         if budget < len(vocab):
             raise ValueError(f"vocab_size={budget} is smaller than required specials+typed={len(vocab)}")
@@ -237,7 +312,14 @@ class CITTrainer:
         # A minimal transformers-compatible folder structure.
         # AutoTokenizer can load this with trust_remote_code=True.
         (outdir / "tokenizer_config.json").write_text(
-            json.dumps({"tokenizer_class": "CITTokenizer", "model_max_length": 512}, indent=2),
+            json.dumps(
+                {
+                    "tokenizer_class": "CITTokenizer",
+                    "model_max_length": 512,
+                    "auto_map": {"AutoTokenizer": ["tokenization_cit.CITTokenizer", None]},
+                },
+                indent=2,
+            ),
             encoding="utf-8",
         )
         (outdir / "special_tokens_map.json").write_text(
@@ -258,7 +340,19 @@ class CITTrainer:
         pkg_dir = outdir / "cit_tokenizers"
         pkg_dir.mkdir(exist_ok=True)
         (pkg_dir / "__init__.py").write_text("# Local package stub for AutoTokenizer remote code\n", encoding="utf-8")
-        (pkg_dir / "tokenization_cit.py").write_text(
-            (Path(__file__).resolve().parents[1] / "tokenization_cit.py").read_text(encoding="utf-8"),
+        src_root = Path(__file__).resolve().parents[1]
+        # Root module for AutoTokenizer dynamic import.
+        (outdir / "tokenization_cit.py").write_text(
+            (src_root / "tokenization_cit.py").read_text(encoding="utf-8"),
             encoding="utf-8",
         )
+        for rel_path in ["tokenization_cit.py", "contract.py", "json_serialize.py", "hygiene.py"]:
+            (pkg_dir / rel_path).write_text((src_root / rel_path).read_text(encoding="utf-8"), encoding="utf-8")
+        cit_dir = pkg_dir / "cit"
+        cit_dir.mkdir(exist_ok=True)
+        (cit_dir / "__init__.py").write_text("", encoding="utf-8")
+        for rel_path in ["runtime.py", "compiler.py"]:
+            (cit_dir / rel_path).write_text(
+                (src_root / "cit" / rel_path).read_text(encoding="utf-8"),
+                encoding="utf-8",
+            )

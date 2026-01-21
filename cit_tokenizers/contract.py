@@ -34,6 +34,13 @@ class ContractConfig:
     def from_json(s: str) -> "ContractConfig":
         return ContractConfig(**json.loads(s))
 
+    def to_dict(self) -> Dict[str, Any]:
+        return asdict(self)
+
+    @staticmethod
+    def from_dict(data: Dict[str, Any]) -> "ContractConfig":
+        return ContractConfig(**data)
+
 class Contract:
     """Deterministic interface contract applied at build and runtime.
 
@@ -44,6 +51,10 @@ class Contract:
 
     def __init__(self, cfg: ContractConfig):
         self.cfg = cfg
+
+    @property
+    def config(self) -> ContractConfig:
+        return self.cfg
 
     def apply(self, x: Union[str, Dict[str, Any]]) -> str:
         # JSON dict -> string serialization (role markers + separators)
@@ -74,3 +85,12 @@ class Contract:
     def apply_many(self, xs: Iterable[Union[str, Dict[str, Any]]]) -> Iterable[str]:
         for x in xs:
             yield self.apply(x)
+
+    def typed_symbols(self) -> list[str]:
+        if not self.cfg.enable_typed_hygiene:
+            return []
+        symbols = ["<UUID>", "<IPV6>", "<IPV4>", "<TS>", "<HASH>", "<HEX>", "<B64>", "<PORT>"]
+        if self.cfg.enable_numeric_buckets:
+            start = max(0, self.cfg.long_num_min_digits - 1)
+            symbols.extend([f"<NUM_POW10_{k}>" for k in range(start, 13)])
+        return symbols

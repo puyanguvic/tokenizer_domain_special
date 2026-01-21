@@ -1,8 +1,0 @@
-dataset:
-  name: waf
-
-train:
-  vocab_size: 16384
-  max_chars: 2000
-  ascii_only: true
-  streaming: false
