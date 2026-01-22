@@ -275,6 +275,10 @@ class CITTrainer:
 
         boundaries = set(self.cfg.boundaries or [])
         symbol_chars = {ch for ch in boundaries if not ch.isspace()}
+        # Avoid creating tokens that straddle typed/tag delimiters like '<' or '>'
+        # (e.g., ':<' or '/<' or '%<') which can prevent matching atomic specials such as <PORT>.
+        symbol_chars.discard('<')
+        symbol_chars.discard('>')
         min_sym = int(self.cfg.symbol_ngram_min_len)
         max_sym = int(self.cfg.symbol_ngram_max_len)
         if max_sym < min_sym:

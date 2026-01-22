@@ -15,6 +15,18 @@ HASH_HEX_RE = re.compile(r"\b[0-9a-fA-F]{32,64}\b")
 HEX_BLOB_RE = re.compile(r"\b[0-9a-fA-F]{16,}\b")
 B64_RE = re.compile(r"\b(?:[A-Za-z0-9+/]{24,}={0,2})\b")
 
+def _repl_b64(m: re.Match) -> str:
+    """Heuristic base64 typing to reduce false positives on ASCII words (e.g., SQL keywords)."""
+    s = m.group(0)
+    # Require some character diversity typical for base64 blobs:
+    # - digits or '+'/'/' or '=' or lowercase letters
+    if re.search(r"[0-9+/=a-z]", s) is None:
+        return s
+    # Avoid typing long ALL-CAPS words (common in payloads like UNION/SELECT/NULL)
+    if re.fullmatch(r"[A-Z]+", s) is not None:
+        return s
+    return "<B64>"
+
 
 # HTTP-aware patterns (reduce false positives like rv:92.0 in User-Agent)
 URL_AUTH_PORT_RE = re.compile(r"(?i)((?:(?:https?|wss?)://)?[A-Za-z0-9.-]+):([0-9]{1,5})(?=[/\s])")
@@ -43,7 +55,7 @@ def apply_typed_hygiene_http(
     x = EPOCH_TS_RE.sub("<TS>", x)
     x = HASH_HEX_RE.sub("<HASH>", x)
     x = HEX_BLOB_RE.sub("<HEX>", x)
-    x = B64_RE.sub("<B64>", x)
+    x = B64_RE.sub(_repl_b64, x)
 
     if enable_version_token:
         # Do NOT type versions inside already-typed symbols
@@ -95,7 +107,7 @@ def apply_typed_hygiene(
     # hashes/blobs
     x = HASH_HEX_RE.sub("<HASH>", x)
     x = HEX_BLOB_RE.sub("<HEX>", x)
-    x = B64_RE.sub("<B64>", x)
+    x = B64_RE.sub(_repl_b64, x)
     # ports: keep the colon to preserve typical structure
     x = PORT_RE.sub(lambda m: f":<PORT>", x)
 
