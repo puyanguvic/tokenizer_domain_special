@@ -45,6 +45,9 @@ def _finalize_cfg(cfg: CITTrainerConfig) -> CITTrainerConfig:
     preset = (cfg.preset or "default").strip().lower()
     boundaries = cfg.boundaries if cfg.boundaries is not None else _boundary_preset(preset)
     include_char_vocab = cfg.include_char_vocab if cfg.include_char_vocab is not None else preset in ("http", "waf")
+    include_ascii_fallback = (
+        cfg.include_ascii_fallback if cfg.include_ascii_fallback is not None else preset in ("http", "waf")
+    )
     symbol_ngram_max_len = cfg.symbol_ngram_max_len
     if symbol_ngram_max_len is None:
         symbol_ngram_max_len = 4 if preset in ("http", "waf") else 0
@@ -66,9 +69,29 @@ def _finalize_cfg(cfg: CITTrainerConfig) -> CITTrainerConfig:
         distortion_mode=cfg.distortion_mode,
         boundary_penalty=cfg.boundary_penalty,
         include_char_vocab=include_char_vocab,
+        include_ascii_fallback=include_ascii_fallback,
         symbol_ngram_min_len=cfg.symbol_ngram_min_len,
         symbol_ngram_max_len=symbol_ngram_max_len,
     )
+
+
+def _ascii_fallback_chars() -> List[str]:
+    """A conservative ASCII fallback alphabet.
+
+    We include all printable ASCII chars plus common whitespace.
+    This is small (~100 tokens) but eliminates [UNK] for most structured domains.
+    """
+
+    chars = [chr(i) for i in range(32, 127)]  # printable
+    chars.extend(["\t", "\n", "\r"])  # common whitespace
+    # ensure deterministic order
+    seen = set()
+    out: List[str] = []
+    for c in chars:
+        if c not in seen:
+            out.append(c)
+            seen.add(c)
+    return out
 
 
 class CITTrainer:
@@ -148,8 +171,18 @@ class CITTrainer:
 
         # 3) Greedy induction
         char_vocab = None
-        if self.cfg.include_char_vocab:
-            char_vocab = sorted({ch for s in proc for ch in s})
+        if self.cfg.include_char_vocab or self.cfg.include_ascii_fallback:
+            chars = set()
+            if self.cfg.include_char_vocab:
+                # chars observed in the processed corpus
+                chars |= {ch for s in proc for ch in s}
+                # always include boundary symbols if char vocab is enabled
+                chars |= set(self.cfg.boundaries or [])
+            if self.cfg.include_ascii_fallback:
+                chars |= set(_ascii_fallback_chars())
+                # also ensure boundary symbols are present for the preset
+                chars |= set(self.cfg.boundaries or [])
+            char_vocab = sorted(chars)
         vocab = self._induce_vocab(
             proc,
             cand_freq,

@@ -31,6 +31,10 @@ class CITTrainerConfig:
     distortion_mode: str = "none"  # 'none' or 'boundary_penalty'
     boundary_penalty: float = 1.0
     include_char_vocab: Optional[bool] = None
+    # If True, inject a fixed ASCII fallback alphabet into the vocab so that
+    # greedy matching can always fall back to single-character tokens instead
+    # of emitting [UNK]. Strongly recommended for structured/security domains.
+    include_ascii_fallback: Optional[bool] = None
     symbol_ngram_min_len: int = 2
     symbol_ngram_max_len: Optional[int] = None
 

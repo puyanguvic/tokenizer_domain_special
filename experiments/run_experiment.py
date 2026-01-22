@@ -26,36 +26,7 @@ from cit_tokenizers.baselines.wordpiece_hygiene.trainer import train_wordpiece_h
 from cit_tokenizers.baselines.unigram_hygiene.trainer import train_unigram_hygiene
 
 
-def _plain_contract() -> ContractConfig:
-    """Contract config used for *unconstrained* baselines.
-
-    - no JSON role serialization
-    - no typed hygiene
-
-    Note: if the raw dataset row is structured (dict), Contract will still fall back
-    to a stable JSON dump string, which matches the "flattened string" baseline.
-    """
-    return ContractConfig(
-        enable_json_serialization=False,
-        enable_typed_hygiene=False,
-        enable_numeric_buckets=False,
-    )
-
-
-ALGORITHMS = (
-    "cit",
-    # Standard subword baselines (no contract / no typed hygiene).
-    "bpe",
-    "wordpiece",
-    "unigram",
-    # Constrained baselines (same contract as CIT, frequency-driven induction).
-    "bpeh",
-    "wordpieceh",
-    "unigramh",
-    # Tokenizer-free-ish fixed baselines.
-    "byte",
-    "char",
-)
+ALGORITHMS = ("cit", "bpeh", "wordpieceh", "unigramh")
 
 
 def parse_args() -> argparse.Namespace:
@@ -77,6 +48,12 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--no-typed-hygiene", action="store_true")
     ap.add_argument("--no-numeric-buckets", action="store_true")
     ap.add_argument("--long-num-min-digits", type=int, default=6)
+    ap.add_argument(
+        "--lowercase",
+        default="none",
+        choices=("none", "ascii"),
+        help="Optional case normalization applied in the contract (default: none).",
+    )
     ap.add_argument("--cit-preset", choices=("default", "http", "waf"), default="default")
     ap.add_argument("--cit-len-min", type=int, default=None)
     ap.add_argument("--cit-len-max", type=int, default=24)
@@ -154,6 +131,7 @@ def _contract_from_args(args: argparse.Namespace) -> ContractConfig:
         enable_typed_hygiene=not args.no_typed_hygiene,
         enable_numeric_buckets=not args.no_numeric_buckets,
         long_num_min_digits=int(args.long_num_min_digits),
+        lowercase_mode=str(getattr(args, "lowercase", "none")),
     )
 
 
@@ -232,26 +210,24 @@ def main() -> None:
             )
             trainer.train_from_iterator(texts, outdir)
             _update_cit_max_length(outdir, args.model_max_length)
-        elif args.algorithm in {"bpe", "bpeh"}:
-            _cfg = _plain_contract() if args.algorithm == "bpe" else contract_cfg
+        elif args.algorithm == "bpeh":
             train_bpe_hygiene(
                 corpus=str(corpus_path),
                 outdir=str(outdir),
                 vocab_size=int(args.vocab_size),
-                contract_cfg=_cfg,
+                contract_cfg=contract_cfg,
                 fmt="jsonl",
                 text_key="text",
                 max_samples=args.max_samples,
                 min_frequency=int(args.min_frequency),
                 model_max_length=int(args.model_max_length),
             )
-        elif args.algorithm in {"wordpiece", "wordpieceh"}:
-            _cfg = _plain_contract() if args.algorithm == "wordpiece" else contract_cfg
+        elif args.algorithm == "wordpieceh":
             train_wordpiece_hygiene(
                 corpus=str(corpus_path),
                 outdir=str(outdir),
                 vocab_size=int(args.vocab_size),
-                contract_cfg=_cfg,
+                contract_cfg=contract_cfg,
                 fmt="jsonl",
                 text_key="text",
                 max_samples=args.max_samples,
@@ -259,69 +235,18 @@ def main() -> None:
                 continuing_subword_prefix=args.wordpiece_prefix,
                 model_max_length=int(args.model_max_length),
             )
-        elif args.algorithm in {"unigram", "unigramh"}:
-            _cfg = _plain_contract() if args.algorithm == "unigram" else contract_cfg
+        elif args.algorithm == "unigramh":
             train_unigram_hygiene(
                 corpus=str(corpus_path),
                 outdir=str(outdir),
                 vocab_size=int(args.vocab_size),
-                contract_cfg=_cfg,
+                contract_cfg=contract_cfg,
                 fmt="jsonl",
                 text_key="text",
                 max_samples=args.max_samples,
                 min_frequency=int(args.min_frequency),
                 model_max_length=int(args.model_max_length),
             )
-        elif args.algorithm in {"byte", "char"}:
-            from tokenizers import Tokenizer
-            from tokenizers import models, pre_tokenizers, decoders
-            from tokenizers.processors import TemplateProcessing
-            from tokenizers.regex import Regex
-            from cit_tokenizers.artifacts.hf_artifact import save_hf_tokenizer
-
-            specials = ["[PAD]", "[UNK]", "[CLS]", "[SEP]", "[MASK]"]
-            vocab: dict[str, int] = {t: i for i, t in enumerate(specials)}
-
-            if args.algorithm == "char":
-                # Build a fixed vocabulary from observed characters (train split).
-                chars: set[str] = set()
-                for s in iter_text(str(corpus_path), fmt="jsonl", text_key="text", max_samples=args.max_samples):
-                    chars.update(list(str(s)))
-                for ch in sorted(chars):
-                    if ch not in vocab:
-                        vocab[ch] = len(vocab)
-            else:
-                # Byte-level using ByteLevel pre-tokenizer's byte-to-unicode alphabet.
-                # We approximate the GPT-2 style byte mapping via the pre_tokenizer output.
-                # The tokenizers library includes this mapping internally.
-                bl = pre_tokenizers.ByteLevel(add_prefix_space=False)
-                # tokenizers doesn't expose the alphabet directly in all versions;
-                # generate it by applying to all 256 bytes.
-                alphabet: set[str] = set()
-                for b in range(256):
-                    s = bytes([b]).decode("latin-1")
-                    pieces = bl.pre_tokenize_str(s)
-                    for (p, _offs) in pieces:
-                        alphabet.add(p)
-                for tok in sorted(alphabet):
-                    if tok not in vocab:
-                        vocab[tok] = len(vocab)
-
-            tokenizer = Tokenizer(models.WordLevel(vocab=vocab, unk_token="[UNK]"))
-            if args.algorithm == "char":
-                tokenizer.pre_tokenizer = pre_tokenizers.Split(Regex(r"."), behavior="isolated")
-                tokenizer.decoder = decoders.Sequence([decoders.Fuse()])
-            else:
-                tokenizer.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
-                tokenizer.decoder = decoders.ByteLevel()
-
-            tokenizer.post_processor = TemplateProcessing(
-                single="[CLS] $A [SEP]",
-                pair="[CLS] $A [SEP] $B [SEP]",
-                special_tokens=[("[CLS]", vocab["[CLS]"]), ("[SEP]", vocab["[SEP]"])],
-            )
-
-            save_hf_tokenizer(tokenizer, str(outdir), model_max_length=int(args.model_max_length))
         else:
             raise ValueError(f"Unknown algorithm '{args.algorithm}'")
 

@@ -22,15 +22,7 @@ from experiments.e2_equal_compute import E2Config, run_e2
 from experiments.e3_robustness import E3Config, run_e3
 
 
-def train_tokenizer(
-    repo_root: Path,
-    dataset: str,
-    algorithm: str,
-    name: str,
-    *,
-    overwrite_corpus: bool,
-    extra_args: List[str] | None = None,
-) -> Path:
+def train_tokenizer(repo_root: Path, dataset: str, algorithm: str, name: str, *, overwrite_corpus: bool) -> Path:
     cmd: List[str] = [
         "python",
         "experiments/run_experiment.py",
@@ -42,12 +34,8 @@ def train_tokenizer(
         name,
         "--verify",
     ]
-    if extra_args:
-        cmd.extend(extra_args)
     if overwrite_corpus:
         cmd.append("--overwrite")
-    if extra_args:
-        cmd.extend(list(extra_args))
     subprocess.check_call(cmd, cwd=str(repo_root))
     outdir = repo_root / "tokenizers" / name
     if not outdir.exists():
@@ -69,13 +57,8 @@ def main() -> None:
     ap.add_argument(
         "--algorithms",
         nargs="+",
-        default=["cit", "bpe", "wordpiece", "unigram", "bpeh", "wordpieceh", "unigramh", "byte", "char"],
+        default=["cit", "bpeh", "unigramh", "wordpieceh"],
         help="Tokenizer algorithms.",
-    )
-    ap.add_argument(
-        "--cit-lambdas",
-        default="0.0,0.1,1.0",
-        help="Comma-separated CIT lambda_rd sweep for E1/E2/E3 (cit only).",
     )
     ap.add_argument("--max-e1", type=int, default=20000, help="Max samples for E1 probe.")
     ap.add_argument("--max-e3", type=int, default=2000, help="Max samples for E3 robustness.")
@@ -88,32 +71,20 @@ def main() -> None:
 
     repo_root = Path(__file__).resolve().parents[1]
 
-    cit_lambdas = [float(x) for x in str(args.cit_lambdas).split(",") if str(x).strip()]
-
     for ds in args.datasets:
         for alg in args.algorithms:
-            sweep = cit_lambdas if alg == "cit" else [None]
-            for lam in sweep:
-                name = f"{ds}_{alg}_tokenizer" if lam is None else f"{ds}_{alg}_lam{lam}_tokenizer"
-                extra = ["--cit-lambda-rd", str(lam)] if (alg == "cit" and lam is not None) else None
-                tok_dir = train_tokenizer(
-                    repo_root,
-                    ds,
-                    alg,
-                    name,
-                    overwrite_corpus=bool(args.overwrite_corpus),
-                    extra_args=extra,
-                )
-                tok = load_tokenizer(alg, tok_dir)
+            name = f"{ds}_{alg}_tokenizer"
+            tok_dir = train_tokenizer(repo_root, ds, alg, name, overwrite_corpus=bool(args.overwrite_corpus))
+            tok = load_tokenizer(alg, tok_dir)
 
-                if not args.skip_e1:
-                    run_e1(cfg=E1Config(dataset=ds, split="val", max_samples=int(args.max_e1)), tokenizer=tok, tokenizer_name=name)
+            if not args.skip_e1:
+                run_e1(cfg=E1Config(dataset=ds, split="val", max_samples=int(args.max_e1)), tokenizer=tok, tokenizer_name=name)
 
-                if not args.skip_e3:
-                    run_e3(cfg=E3Config(dataset=ds, split="val", max_samples=int(args.max_e3)), tokenizer=tok, tokenizer_name=name)
+            if not args.skip_e3:
+                run_e3(cfg=E3Config(dataset=ds, split="val", max_samples=int(args.max_e3)), tokenizer=tok, tokenizer_name=name)
 
-                if not args.skip_e2:
-                    run_e2(cfg=E2Config(dataset=ds, total_tokens=int(args.e2_total_tokens)), tokenizer=tok, tokenizer_name=name)
+            if not args.skip_e2:
+                run_e2(cfg=E2Config(dataset=ds, total_tokens=int(args.e2_total_tokens)), tokenizer=tok, tokenizer_name=name)
 
 
 if __name__ == "__main__":

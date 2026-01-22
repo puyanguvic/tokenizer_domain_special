@@ -10,16 +10,7 @@ from torch import nn
 from torch.utils.data import DataLoader, Dataset
 
 # Import common first to bootstrap repo imports when running from a checkout.
-from experiments.common import (
-    detect_label_key,
-    get_text,
-    infer_num_labels,
-    remap_labels_to_contiguous,
-    results_root,
-    save_csv,
-    save_json,
-    to_int_label,
-)
+from experiments.common import detect_label_key, results_root, save_csv, save_json, to_int_label
 
 from cit_tokenizers.corpus import load_dataset_by_name, resolve_dataset_key
 
@@ -58,7 +49,7 @@ class MeanPoolProbe(nn.Module):
     This is intentionally small and used only as an interface diagnostic.
     """
 
-    def __init__(self, vocab_size: int, dim: int, num_labels: int):
+    def __init__(self, vocab_size: int, dim: int, num_labels: int = 2):
         super().__init__()
         self.emb = nn.Embedding(vocab_size, dim)
         self.head = nn.Linear(dim, num_labels)
@@ -93,12 +84,13 @@ def run_e1(
     label_key = cfg.label_key or detect_label_key(ds[0])
     n = min(cfg.max_samples, len(ds))
     rows = [ds[i] for i in range(n)]
-    texts = [get_text(r, dataset_key=ds_key) for r in rows]
+    texts = [str(r.get("text") or r.get("body") or r.get("url") or r.get("content") or "") for r in rows]
+    # Prefer dataset-specific formatter if available: the corpus export uses it.
+    # Here we keep it simple: if a formatted field exists, use it.
+    if "formatted" in rows[0]:
+        texts = [str(r.get("formatted", "")) for r in rows]
 
-    raw_int = [to_int_label(r.get(label_key)) for r in rows]
-    raw_int, mapping = remap_labels_to_contiguous(raw_int)
-    num_labels = infer_num_labels(raw_int)
-    labels = torch.tensor(raw_int, dtype=torch.long)
+    labels = torch.tensor([to_int_label(r.get(label_key)) for r in rows], dtype=torch.long)
 
     enc = tokenizer(
         texts,
@@ -111,7 +103,7 @@ def run_e1(
 
     # Probe training (estimate distortion as best achievable label CE).
     vocab_size = int(getattr(tokenizer, "vocab_size", 0) or len(tokenizer))
-    model = MeanPoolProbe(vocab_size=vocab_size, dim=int(cfg.probe_dim), num_labels=int(num_labels))
+    model = MeanPoolProbe(vocab_size=vocab_size, dim=int(cfg.probe_dim), num_labels=2)
     opt = torch.optim.AdamW(model.parameters(), lr=float(cfg.lr))
     loss_fn = nn.CrossEntropyLoss()
 
@@ -163,8 +155,6 @@ def run_e1(
             "avg_len": avg_len,
             "distortion_ce": distortion,
             "label_key": label_key,
-            "num_labels": int(num_labels),
-            "label_mapping": mapping,
         },
         outdir / "metrics.json",
     )

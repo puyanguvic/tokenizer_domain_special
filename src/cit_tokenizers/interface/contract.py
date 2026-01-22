@@ -20,6 +20,17 @@ class ContractConfig:
     enable_numeric_buckets: bool = True
     long_num_min_digits: int = 6
 
+    # Case normalization
+    #
+    # Notes:
+    # - For many security/structured domains, case can be semantically meaningful
+    #   (e.g., URL paths on some servers, base64/hex blobs, user-provided IDs).
+    # - Some fields are effectively case-insensitive (e.g., HTTP header names).
+    #
+    # We therefore keep the default as "none" and expose an optional
+    # ASCII-only lowercasing mode.
+    lowercase_mode: str = "none"  # 'none' or 'ascii'
+
     # Boundary markers / separators
     key_prefix: str = "<K:"
     key_suffix: str = ">"
@@ -80,6 +91,13 @@ class Contract:
                 enable_numeric_buckets=self.cfg.enable_numeric_buckets,
                 long_num_min_digits=self.cfg.long_num_min_digits,
             )
+
+        # Optional ASCII-only case normalization.
+        if self.cfg.lowercase_mode == "ascii":
+            # Avoid locale-dependent behavior; only map A-Z -> a-z.
+            x = "".join((chr(ord(ch) + 32) if "A" <= ch <= "Z" else ch) for ch in x)
+        elif self.cfg.lowercase_mode not in ("none", ""):
+            raise ValueError(f"Unknown lowercase_mode={self.cfg.lowercase_mode!r}")
         return x
 
     def apply_many(self, xs: Iterable[Union[str, Dict[str, Any]]]) -> Iterable[str]:
