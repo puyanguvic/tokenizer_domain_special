@@ -4,6 +4,8 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+import random
+from typing import List, Tuple
 from pathlib import Path
 from typing import Optional
 
@@ -72,8 +74,17 @@ def parse_args() -> argparse.Namespace:
     ap.add_argument("--cit-symbol-ngram-min", type=int, default=2)
     ap.add_argument("--cit-symbol-ngram-max", type=int, default=None)
     ap.add_argument("--wordpiece-prefix", default="##")
-    ap.add_argument("--verify", action="store_true", help="Load the trained tokenizer and run an example.")
-    ap.add_argument("--example", default=None, help="Example text to tokenize after training.")
+    ap.add_argument("--verify", action="store_true", help="Verify tokenizer by tokenizing sampled examples.")
+    ap.add_argument("--verify-n", type=int, default=5, help="Number of dataset examples to print for verification.")
+    ap.add_argument("--verify-seed", type=int, default=0, help="Random seed for verification sampling.")
+    ap.add_argument(
+        "--verify-source",
+        choices=("corpus", "example"),
+        default="corpus",
+        help="Verify source: sample from exported corpus JSONL, or use --example string.",
+    )
+    ap.add_argument("--example", default=None, help="Example text to tokenize after training (when --verify-source=example).")
+
     return ap.parse_args()
 
 
@@ -123,6 +134,28 @@ def _ensure_corpus(
         streaming=streaming,
         use_formatter=use_formatter,
     )
+
+
+def _sample_texts_from_corpus(corpus_path: Path, *, n: int, seed: int) -> Tuple[List[str], int]:
+    """
+    Reservoir-sample up to n texts from a potentially huge JSONL corpus without loading into memory.
+    Returns (samples, total_seen).
+    """
+    rng = random.Random(seed)
+    samples: List[str] = []
+    seen = 0
+
+    for text in iter_text(str(corpus_path), fmt="jsonl", text_key="text", max_samples=None):
+        seen += 1
+        if len(samples) < n:
+            samples.append(text)
+        else:
+            # replace elements with decreasing probability
+            j = rng.randrange(seen)
+            if j < n:
+                samples[j] = text
+
+    return samples, seen
 
 
 def _contract_from_args(args: argparse.Namespace) -> ContractConfig:
@@ -252,21 +285,51 @@ def main() -> None:
 
         print(f"[3/3] Saved tokenizer to {outdir}")
 
-    if args.verify:
-        example = args.example or "GET /index.html?x=1 HTTP/1.1"
-        if args.algorithm == "cit":
-            # CIT artifacts are data-only; load using the installed package implementation.
-            from cit_tokenizers.tokenization_cit import CITTokenizer
 
-            tok = CITTokenizer.from_pretrained(str(outdir))
+        if args.verify:
+            if args.algorithm == "cit":
+                from cit_tokenizers.tokenization_cit import CITTokenizer
+                tok = CITTokenizer.from_pretrained(str(outdir))
+                unk_token = getattr(tok, "unk_token", "[UNK]")
         else:
             from transformers import AutoTokenizer
+            tok = AutoTokenizer.from_pretrained(str(outdir), use_fast=True)
+            unk_token = getattr(tok, "unk_token", "[UNK]")
 
-            tok = AutoTokenizer.from_pretrained(str(outdir))
-        tokens = tok.tokenize(example)
-        print("[verify] example:", example)
-        print("[verify] tokens:", tokens)
+        if args.verify_source == "example":
+            example = args.example or "GET /index.html?x=1 HTTP/1.1"
+            texts = [example]
+            print(f"[verify] source=example")
+        else:
+            # Use the exported corpus for the chosen split
+            # If tokenizer existed and we skipped training, we still need to locate the corpus path.
+            if "corpus_path" not in locals():
+                corpus_path = _ensure_corpus(
+                    dataset_key,
+                    args.split,
+                    cache_dir=cache_dir,
+                    corpus_dir=corpus_dir,
+                    text_key=args.text_key,
+                    max_samples=args.max_samples,
+                    streaming=args.streaming,
+                    use_formatter=not args.no_formatter,
+                    overwrite=False,
+                )
+            texts, seen = _sample_texts_from_corpus(
+                corpus_path,
+                n=int(args.verify_n),
+                seed=int(args.verify_seed),
+            )
+            print(f"[verify] source=corpus split={args.split} n={len(texts)} seen={seen} corpus={corpus_path}")
 
+        for i, x in enumerate(texts):
+            tokens = tok.tokenize(x)
+            unk_cnt = sum(1 for t in tokens if t == unk_token)
+            denom = max(1, len(tokens))
+            print("\n" + "=" * 80)
+            print(f"[verify:{i}] raw[:200] = {x[:200]!r}")
+            print(f"[verify:{i}] tokens_len = {len(tokens)}  UNK = {unk_cnt}/{denom} ({unk_cnt/denom:.3f})")
+            print(f"[verify:{i}] tokens[:120] = {tokens[:120]}")
 
 if __name__ == "__main__":
     main()
