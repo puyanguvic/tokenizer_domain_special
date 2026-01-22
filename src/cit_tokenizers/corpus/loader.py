@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from ..loader import (
+from ..io.loader import (
     export_dataset_corpus,
     iter_dataset_texts,
     list_datasets,

@@ -20,6 +20,7 @@ from cit_tokenizers.interface.contract import ContractConfig
 from cit_tokenizers.corpus import export_dataset_corpus, resolve_dataset_key, resolve_dataset_path
 from cit_tokenizers.io.data import iter_text
 from cit_tokenizers.cit.trainer import CITTrainer, CITTrainerConfig
+from cit_tokenizers.config import CITBuildConfig
 from cit_tokenizers.baselines.bpe_hygiene.trainer import train_bpe_hygiene
 from cit_tokenizers.baselines.wordpiece_hygiene.trainer import train_wordpiece_hygiene
 from cit_tokenizers.baselines.unigram_hygiene.trainer import train_unigram_hygiene
@@ -185,9 +186,15 @@ def main() -> None:
                 include_char_vocab=args.cit_include_chars,
                 symbol_ngram_min_len=int(args.cit_symbol_ngram_min),
                 symbol_ngram_max_len=args.cit_symbol_ngram_max,
-                contract=contract_cfg,
             )
-            trainer = CITTrainer(cfg)
+            build_cfg = CITBuildConfig(
+                trainer=cfg,
+                contract=contract_cfg,
+                corpus_format="jsonl",
+                text_key="text",
+                max_samples=int(args.max_samples) if args.max_samples is not None else None,
+            )
+            trainer = CITTrainer(build_config=build_cfg)
             texts = iter_text(
                 str(corpus_path),
                 fmt="jsonl",

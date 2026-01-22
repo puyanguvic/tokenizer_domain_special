@@ -189,7 +189,29 @@ def load_dataset_by_name(
     dataset_path = resolve_dataset_path(dataset_key)
     cache_root = Path(cache_dir) if cache_dir is not None else DEFAULT_CACHE_DIR
     cache_root.mkdir(parents=True, exist_ok=True)
-    return hf_load_dataset(dataset_path, split=split, cache_dir=str(cache_root), **kwargs)
+    def _load(split_name: Optional[str]):
+        return hf_load_dataset(dataset_path, split=split_name, cache_dir=str(cache_root), **kwargs)
+
+    if split is None:
+        return _load(None)
+
+    try:
+        return _load(split)
+    except ValueError as exc:
+        msg = str(exc)
+        if "Unknown split" not in msg:
+            raise
+        normalized = str(split).strip().lower()
+        if normalized in {"val", "valid", "validation", "dev"}:
+            for alt in ("validation", "test"):
+                if alt == normalized:
+                    continue
+                try:
+                    return _load(alt)
+                except ValueError as alt_exc:
+                    if "Unknown split" not in str(alt_exc):
+                        raise
+        raise
 
 
 def iter_dataset_texts(
