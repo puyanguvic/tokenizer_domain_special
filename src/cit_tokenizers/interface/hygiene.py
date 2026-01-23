@@ -40,7 +40,8 @@ def _repl_b64(m: re.Match) -> str:
     src = m.string
     a = max(0, m.start() - 3)
     b = min(len(src), m.end() + 3)
-    if "%" in src[a:b]:
+    window = PCT_TRIPLET_RE.sub("", src[a:b])
+    if "%" in window:
         return s
 
     # Require some character diversity typical for base64 blobs:

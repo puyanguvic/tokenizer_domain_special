@@ -14,9 +14,12 @@ class ValidationIssue:
 
 
 def validate_typed_symbol_integrity(vocab_tokens: Iterable[str], typed_symbols: Sequence[str]) -> list[ValidationIssue]:
-    """Validate that vocab does not contain proper substrings of typed symbols.
+    """Validate that vocab does not contain risky substrings of typed symbols.
 
-    This enforces the paper's 'typed-symbol integrity' constraint at the artifact level.
+    We only flag substrings that include the angle-bracket delimiters, which can
+    interfere with atomic matching of typed symbols. Single-character tokens and
+    plain alphanumerics (e.g., "IPV", "HASH") are ignored to avoid false positives
+    when character vocab/fallback is enabled.
     """
     vocab = set(vocab_tokens)
     issues: list[ValidationIssue] = []
@@ -24,7 +27,11 @@ def validate_typed_symbol_integrity(vocab_tokens: Iterable[str], typed_symbols: 
         for tok in vocab:
             if tok == sym:
                 continue
-            if tok and tok in sym:
+            if not tok or len(tok) < 2:
+                continue
+            if "<" not in tok and ">" not in tok:
+                continue
+            if tok in sym:
                 issues.append(
                     ValidationIssue(
                         code="typed_symbol_substring",

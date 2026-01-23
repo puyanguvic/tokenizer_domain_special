@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import CITBuildConfig, CITTrainerConfig
-from ..interface.contract import ContractConfig
+from ..interface.contract import Contract, ContractConfig
 from ..io.data import iter_text
 from ..utils.logging import configure_logging
 from ..cit.trainer import CITTrainer
@@ -245,11 +245,11 @@ def build_parser() -> argparse.ArgumentParser:
     # Validate
     val = sub.add_parser("validate", help="Validate an artifact directory")
     val.add_argument("--artifact-dir", required=True)
-        val.add_argument("--max-long-hex-fraction", type=float, default=0.005, help="Fail if long-hex tokens exceed this fraction of vocab.")
+    val.add_argument("--max-long-hex-fraction", type=float, default=0.005, help="Fail if long-hex tokens exceed this fraction of vocab.")
     val.add_argument("--max-long-hex-count", type=int, default=32, help="Fail if long-hex tokens exceed this absolute count.")
     val.add_argument("--max-b64-fraction", type=float, default=0.002, help="Fail if base64-like tokens exceed this fraction of vocab.")
     val.add_argument("--max-b64-count", type=int, default=16, help="Fail if base64-like tokens exceed this absolute count.")
-val.set_defaults(func=cmd_validate)
+    val.set_defaults(func=cmd_validate)
 
     # Export
     exp = sub.add_parser("export-hf", help="Export a CIT artifact as an HF-style folder")
