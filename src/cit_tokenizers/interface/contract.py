@@ -5,6 +5,7 @@ import json
 
 from .json_serialize import serialize_json_record
 from .hygiene import apply_typed_hygiene, apply_typed_hygiene_http
+from .http_struct import structure_http
 
 @dataclass(frozen=True)
 class ContractConfig:
@@ -21,6 +22,10 @@ class ContractConfig:
     typed_hygiene_mode: str = "generic"  # 'generic' or 'http'
     enable_version_token: bool = True
     long_num_min_digits: int = 6
+
+    # Structured HTTP preprocessing
+    structured_input_mode: str = "none"  # 'none' or 'http'/'waf'
+    structured_max_len: int = 4096
 
     # Case normalization
     #
@@ -70,6 +75,19 @@ class Contract:
         return self.cfg
 
     def apply(self, x: Union[str, Dict[str, Any]]) -> str:
+        # Optional structured parsing (HTTP/WAF-like inputs).
+        if (self.cfg.structured_input_mode or "none").lower() in ("http", "waf"):
+            x = structure_http(
+                x,
+                sep_token=self.cfg.sep_token,
+                eol_token=self.cfg.eol_token,
+                key_prefix=self.cfg.key_prefix,
+                key_suffix=self.cfg.key_suffix,
+                empty_token=self.cfg.empty_token,
+                long_num_min_digits=self.cfg.long_num_min_digits,
+                max_len=int(self.cfg.structured_max_len),
+            )
+
         # JSON dict -> string serialization (role markers + separators)
         if self.cfg.enable_json_serialization and isinstance(x, dict):
             x = serialize_json_record(

@@ -16,6 +16,7 @@ def train_wordpiece_hygiene(
     min_frequency: int = 10,
     continuing_subword_prefix: str = "##",
     model_max_length: int = 512,
+    clean: bool = True,
 ) -> None:
     os.makedirs(outdir, exist_ok=True)
     contract = Contract(contract_cfg)
@@ -31,7 +32,7 @@ def train_wordpiece_hygiene(
     )
 
     def gen():
-        for s in iter_text(corpus, fmt=fmt, text_key=text_key, max_samples=max_samples):
+        for s in iter_text(corpus, fmt=fmt, text_key=text_key, max_samples=max_samples, clean=clean):
             yield contract.apply(s)
 
     tokenizer.train_from_iterator(gen(), trainer=trainer)

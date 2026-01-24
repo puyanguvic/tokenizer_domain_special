@@ -7,15 +7,20 @@ def iter_text(
     fmt: str = "txt",
     text_key: str = "text",
     max_samples: Optional[int] = None,
+    clean: bool = False,
 ):
     n = 0
     fmt = fmt.lower()
+    if clean:
+        from .clean import clean_text
     if fmt == "txt":
         with open(corpus_path, "r", encoding="utf-8", errors="ignore") as f:
             for line in f:
                 s = line.rstrip("\n")
                 if not s:
                     continue
+                if clean:
+                    s = clean_text(s)
                 yield s
                 n += 1
                 if max_samples and n >= max_samples:
@@ -28,9 +33,12 @@ def iter_text(
                     continue
                 obj = json.loads(line)
                 if isinstance(obj, dict) and text_key in obj:
-                    yield obj[text_key]
+                    s = str(obj[text_key])
                 else:
-                    yield json.dumps(obj, ensure_ascii=False)
+                    s = json.dumps(obj, ensure_ascii=False)
+                if clean:
+                    s = clean_text(s)
+                yield s
                 n += 1
                 if max_samples and n >= max_samples:
                     return
@@ -44,7 +52,10 @@ def iter_text(
         for s in col:
             if s is None:
                 continue
-            yield str(s)
+            out = str(s)
+            if clean:
+                out = clean_text(out)
+            yield out
             n += 1
             if max_samples and n >= max_samples:
                 return

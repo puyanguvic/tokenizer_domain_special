@@ -50,6 +50,62 @@ cit train cit \
   --seed 0
 ```
 
+Training cleans noisy blobs (e.g., base64/hex) by default; disable with `--no-clean`.
+For `--preset http|waf`, structured HTTP parsing is enabled by default (see `--structured-input`).
+
+Explicitly enable structured parsing:
+
+```bash
+cit train cit \
+  --preset waf \
+  --structured-input http \
+  --structured-max-len 4096 \
+  --corpus datasets/corpus/puyang2025__waf_data_v2_train.jsonl \
+  --text-key text \
+  --outdir tokenizers/waf_cit_tokenizer_struct \
+  --vocab-size 8192 \
+  --min-freq 10 \
+  --seed 0
+```
+
+Structured HTTP preprocessing:
+- Emits tags like `<METHOD>`, `<URL>`, `<HDR>`, `<BODY>` and splits query/cookie/body values into key/value tokens.
+- High-entropy values are replaced with placeholders such as `<HEX>`, `<B64>`, `<HASH_32>`, `<UUID>`, `<URLENC>`, `<BYTES>`, and numeric buckets.
+- Cookie keys keep readable prefixes while high-entropy suffixes are normalized (e.g., `comment_author_<hash>` -> `comment_author_<HEX>`).
+- Fallback on parse failure: `<RAW> ... <TRUNC>` with a hard length cap.
+
+Optional: pre-clean a corpus and write it back out:
+
+```bash
+cit clean \
+  --format jsonl \
+  --corpus datasets/corpus/puyang2025__waf_data_v2_train.jsonl \
+  --text-key text \
+  --out datasets/corpus/puyang2025__waf_data_v2_train_clean.jsonl
+```
+
+Optional: pre-clean + structured HTTP parsing:
+
+```bash
+cit clean \
+  --format jsonl \
+  --corpus datasets/corpus/puyang2025__waf_data_v2_train.jsonl \
+  --text-key text \
+  --structured-input http \
+  --out datasets/corpus/puyang2025__waf_data_v2_train_struct.jsonl
+```
+
+Cookie key normalization demo:
+
+```bash
+cit clean \
+  --format jsonl \
+  --corpus datasets/corpus/puyang2025__waf_data_v2_train.jsonl \
+  --text-key text \
+  --structured-input http \
+  --out datasets/corpus/puyang2025__waf_data_v2_train_struct_cookiekeys.jsonl
+```
+
 Common arguments:
 
 - `--corpus`: Path to corpus file (required).
@@ -73,6 +129,8 @@ Contract options:
 - `--no-typed-hygiene`: Disable typed hygiene.
 - `--no-numeric-buckets`: Disable numeric bucket tokens.
 - `--long-num-min-digits`: Minimum digit count for long-number buckets (default: `6`).
+- `--structured-input`: Structured preprocessing mode: `none`, `http`, or `waf` (default: auto for `http|waf` preset).
+- `--structured-max-len`: Hard cap for structured parsing input length (default: `4096`).
 
 Global:
 

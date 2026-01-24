@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
 from ..config import CITBuildConfig, CITTrainerConfig
 from ..interface.contract import Contract, ContractConfig
 from ..io.data import iter_text
+from ..io.clean import clean_corpus
 from ..utils.logging import configure_logging
 from ..cit.trainer import CITTrainer
 from ..cit.validate import validate_artifact
@@ -32,16 +34,22 @@ def _add_contract_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--no-typed-hygiene", action="store_true")
     p.add_argument("--no-numeric-buckets", action="store_true")
     p.add_argument("--long-num-min-digits", type=int, default=6)
+    p.add_argument("--structured-input", default=None, choices=["none", "http", "waf"])
+    p.add_argument("--structured-max-len", type=int, default=None)
 
 
 def _load_contract(args: argparse.Namespace) -> ContractConfig:
     if args.contract_json:
         return ContractConfig.from_json(Path(args.contract_json).read_text(encoding="utf-8"))
+    structured_input = getattr(args, "structured_input", None)
+    structured_max_len = getattr(args, "structured_max_len", None)
     return ContractConfig(
         enable_json_serialization=not args.no_json_serialization,
         enable_typed_hygiene=not args.no_typed_hygiene,
         enable_numeric_buckets=not args.no_numeric_buckets,
         long_num_min_digits=int(args.long_num_min_digits),
+        structured_input_mode=structured_input or "none",
+        structured_max_len=int(structured_max_len) if structured_max_len is not None else 4096,
     )
 
 
@@ -50,6 +58,22 @@ def _add_corpus_args(p: argparse.ArgumentParser) -> None:
     p.add_argument("--format", default="txt", choices=["txt", "jsonl", "parquet"])
     p.add_argument("--text-key", default="text")
     p.add_argument("--max-samples", type=int, default=None)
+
+
+def _add_clean_args(p: argparse.ArgumentParser) -> None:
+    p.add_argument(
+        "--clean",
+        dest="clean",
+        action="store_true",
+        default=True,
+        help="Replace noisy blobs (e.g., base64/hex) with placeholders before training.",
+    )
+    p.add_argument(
+        "--no-clean",
+        dest="clean",
+        action="store_false",
+        help="Disable corpus cleaning.",
+    )
 
 
 def _add_cit_trainer_args(p: argparse.ArgumentParser) -> None:
@@ -72,6 +96,10 @@ def cmd_train_cit(args: argparse.Namespace) -> None:
         build_cfg = CITBuildConfig.from_json(Path(args.config).read_text(encoding="utf-8"))
 
     contract_cfg = _load_contract(args) if build_cfg is None else build_cfg.contract
+    if build_cfg is None and args.structured_input is None and not args.contract_json:
+        preset = str(args.preset or "default").strip().lower()
+        if preset in ("http", "waf"):
+            contract_cfg = replace(contract_cfg, structured_input_mode="http")
 
     trainer_cfg = (
         CITTrainerConfig(
@@ -101,7 +129,13 @@ def cmd_train_cit(args: argparse.Namespace) -> None:
         else build_cfg
     )
 
-    texts = iter_text(args.corpus, fmt=str(args.format), text_key=str(args.text_key), max_samples=args.max_samples)
+    texts = iter_text(
+        args.corpus,
+        fmt=str(args.format),
+        text_key=str(args.text_key),
+        max_samples=args.max_samples,
+        clean=bool(args.clean),
+    )
     trainer = CITTrainer(build_config=build_cfg)
     trainer.train_from_iterator(texts, args.outdir)
 
@@ -173,6 +207,7 @@ def cmd_train_bpeh(args: argparse.Namespace) -> None:
         max_samples=args.max_samples,
         min_frequency=int(args.min_freq),
         model_max_length=int(args.model_max_length),
+        clean=bool(args.clean),
     )
 
 
@@ -189,6 +224,7 @@ def cmd_train_wordpieceh(args: argparse.Namespace) -> None:
         max_samples=args.max_samples,
         min_frequency=int(args.min_freq),
         model_max_length=int(args.model_max_length),
+        clean=bool(args.clean),
     )
 
 
@@ -205,7 +241,23 @@ def cmd_train_unigramh(args: argparse.Namespace) -> None:
         max_samples=args.max_samples,
         min_frequency=int(args.min_freq),
         model_max_length=int(args.model_max_length),
+        clean=bool(args.clean),
     )
+
+
+def cmd_clean_corpus(args: argparse.Namespace) -> None:
+    configure_logging(args.log_level)
+    clean_corpus(
+        corpus_path=str(args.corpus),
+        out_path=str(args.out),
+        fmt=str(args.format),
+        text_key=str(args.text_key),
+        max_samples=int(args.max_samples) if args.max_samples is not None else None,
+        out_format=str(args.out_format) if args.out_format is not None else None,
+        structured_input=str(args.structured_input) if args.structured_input is not None else None,
+        structured_max_len=int(args.structured_max_len) if args.structured_max_len is not None else None,
+    )
+    print(f"[OK] wrote: {args.out}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -220,24 +272,28 @@ def build_parser() -> argparse.ArgumentParser:
 
     cit_p = train_sub.add_parser("cit", help="Train CIT tokenizer")
     _add_corpus_args(cit_p)
+    _add_clean_args(cit_p)
     _add_contract_args(cit_p)
     _add_cit_trainer_args(cit_p)
     cit_p.set_defaults(func=cmd_train_cit)
 
     bpe_p = train_sub.add_parser("bpeh", help="Train BPE+Hygiene baseline")
     _add_corpus_args(bpe_p)
+    _add_clean_args(bpe_p)
     _add_contract_args(bpe_p)
     _add_baseline_args(bpe_p)
     bpe_p.set_defaults(func=cmd_train_bpeh)
 
     wp_p = train_sub.add_parser("wordpieceh", help="Train WordPiece+Hygiene baseline")
     _add_corpus_args(wp_p)
+    _add_clean_args(wp_p)
     _add_contract_args(wp_p)
     _add_baseline_args(wp_p)
     wp_p.set_defaults(func=cmd_train_wordpieceh)
 
     uni_p = train_sub.add_parser("unigramh", help="Train Unigram+Hygiene baseline")
     _add_corpus_args(uni_p)
+    _add_clean_args(uni_p)
     _add_contract_args(uni_p)
     _add_baseline_args(uni_p)
     uni_p.set_defaults(func=cmd_train_unigramh)
@@ -273,6 +329,15 @@ def build_parser() -> argparse.ArgumentParser:
     pull.add_argument("--seed", type=int, default=0)
     pull.add_argument("--out", required=True, help="Output parquet path")
     pull.set_defaults(func=cmd_dataset_pull)
+
+    # Clean
+    clean = sub.add_parser("clean", help="Clean a corpus by replacing noisy blobs with placeholders")
+    _add_corpus_args(clean)
+    clean.add_argument("--out", required=True, help="Output path")
+    clean.add_argument("--out-format", default=None, choices=["txt", "jsonl", "parquet"])
+    clean.add_argument("--structured-input", default=None, choices=["none", "http", "waf"])
+    clean.add_argument("--structured-max-len", type=int, default=None)
+    clean.set_defaults(func=cmd_clean_corpus)
 
     return p
 

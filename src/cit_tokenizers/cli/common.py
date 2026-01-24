@@ -16,6 +16,8 @@ def add_common_contract_args(p: argparse.ArgumentParser):
     p.add_argument("--no-typed-hygiene", action="store_true")
     p.add_argument("--no-numeric-buckets", action="store_true")
     p.add_argument("--long-num-min-digits", type=int, default=6)
+    p.add_argument("--structured-input", default=None, choices=["none", "http", "waf"])
+    p.add_argument("--structured-max-len", type=int, default=None)
 
 def load_contract_config(args) -> ContractConfig:
     if args.contract_json:
@@ -26,6 +28,8 @@ def load_contract_config(args) -> ContractConfig:
         enable_typed_hygiene=not args.no_typed_hygiene,
         enable_numeric_buckets=not args.no_numeric_buckets,
         long_num_min_digits=int(args.long_num_min_digits),
+        structured_input_mode=args.structured_input or "none",
+        structured_max_len=int(args.structured_max_len) if args.structured_max_len is not None else 4096,
     )
 
 
